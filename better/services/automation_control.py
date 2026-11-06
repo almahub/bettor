@@ -122,7 +122,7 @@ class AutomationControl:
             "usd_safety_caps": {"per_match": self.settings.validation_research_budget_per_match,
                 "per_day": self.settings.validation_research_budget_per_day,
                 "per_week": self.settings.validation_research_budget_per_week},
-            "scope": "Ricerche automatiche Serie A T24/T30; non puntate, non analisi manuali",
+            "scope": "Ricerche automatiche Serie A T24; non puntate, non analisi manuali",
             "last_block": max((r for r in self._rows(SPEND) if r["kind"] == "BLOCKED"), key=lambda r: r["at"], default=None)}
 
     def guard(self, match, checkpoint):

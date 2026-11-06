@@ -491,7 +491,7 @@ class DataPipelineCollector:
                 archive_result = {"status": "ERROR", "error": failure_detail(error, stage="ARCHIVE")}
             from better.services.salabet_service import SalaBetService
             from better.services.timing_comparison import TimingComparisonService
-            timing_targets = {row["match"]["match_id"]: row["match"] for row in selected}
+            timing_targets = {row["match"]["match_id"]: row["match"] for row in targets.values()}
             for candidate in SalaBetService(self.runtime.repository, clock=self.clock).list_candidates():
                 if candidate.match_id in targets:
                     timing_targets.setdefault(candidate.match_id, targets[candidate.match_id]["match"])

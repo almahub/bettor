@@ -1,7 +1,6 @@
-"""Append-only paired pre-match experiment; never writes validation or bank rows."""
+"""Append-only Serie A T24 analyses and candidates; never writes bank rows."""
 
 from datetime import UTC, datetime, timedelta
-from statistics import mean
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -13,7 +12,7 @@ from better.storage.db import TABLES
 from better.storage.repository import canonical_hash
 
 ENTITY = "timing-comparison:v1"
-WINDOWS = {"T24": timedelta(hours=24), "T30": timedelta(minutes=30)}
+WINDOWS = {"T24": timedelta(hours=24)}
 GRACE = timedelta(minutes=10)
 
 
@@ -70,7 +69,8 @@ class TimingComparisonService:
 
     def store(self, match, checkpoint, run):
         end = self.clock()
-        scheduled = match.kickoff - WINDOWS[checkpoint]
+        # Preserve the historical reader contract; scheduling uses T24 only.
+        scheduled = match.kickoff - (timedelta(minutes=30) if checkpoint == "T30" else WINDOWS[checkpoint])
         if not (scheduled <= run.as_of <= end < min(match.kickoff, scheduled + GRACE)) or run.created_at > end:
             raise ValueError("TIMING_WINDOW_MISSED: acquisizione fuori finestra pre-match")
         if run.match_id != match.match_id or run.snapshot.match.kickoff != match.kickoff:
@@ -138,29 +138,45 @@ class TimingComparisonService:
                       "MISSING" if self.clock() >= due + GRACE else "SCHEDULED")
             checkpoints[name] = {"status": status, "scheduled_at": due.isoformat(),
                 "capture": capture, "error": failure.get("diagnostic") if failure else None}
-        a, b = captures.get("T24"), captures.get("T30")
-        verdict, reason = "PENDING", "Confronto non ancora disponibile"
-        if b and candidate:
-            market = candidate.get("market")
-            model = next((m for m in b["markets"] if m["market"] == market
-                          and m["model"] == candidate.get("model_name")
-                          and m["version"] == candidate.get("model_version")), None)
-            decision = b["decision_market"] or {}
-            if not model:
-                verdict, reason = "NOT_ADMITTED", "Input insufficienti per questa proposta"
-            elif model["selection"] != candidate.get("selection"):
-                verdict, reason = "CHANGED", "Il modello indica una selezione diversa"
-            elif b["decision"] == "BET" and decision.get("selection") == candidate.get("selection") and decision.get("type") == market:
-                verdict, reason = "CONFIRMED", "Proposta ammessa dalla decisione aggiornata"
-            else:
-                verdict, reason = "NOT_ADMITTED", "Pronostico disponibile, ma BET operativo non ammesso"
-        return {"enabled": self.control.policy()["enabled"],
-            "checkpoints": checkpoints, "verdict": verdict, "reason": reason,
-            "paired": bool(a and b), "paid_research": self.control.report()["paid_research"]}
+        return {"enabled": self.control.policy()["enabled"], "mode": "T24_ONLY",
+            "checkpoints": checkpoints, "verdict": "INITIAL_ANALYSIS",
+            "reason": "Analisi automatica T−24; nessun confronto successivo",
+            "paired": False, "paid_research": self.control.report()["paid_research"]}
+
+    def _transfer(self, match, capture):
+        from better.domain.salabet import BetCandidateCreate
+        from better.services.batch_analysis import BatchAnalysisService
+        from better.services.salabet_service import SalaBetService
+
+        identifier = "timing-transfer:" + self._id(match, "T24")
+        if any(r.get("transfer_id") == identifier for r in self.rows()):
+            return None
+        if not self.clock() < match.kickoff <= self.clock() + timedelta(hours=24):
+            return None
+        run = self.repository.get_run(capture["analysis_id"])
+        if run is None:
+            raise ValueError("T24_ANALYSIS_NOT_FOUND")
+        item, reason = (BatchAnalysisService(self.runtime, clock=self.clock)._best_candidate(run)
+                        if run.forecast else (None, "MODEL_INPUT_INSUFFICIENT"))
+        payload = {"kind": "TRANSFER", "transfer_id": identifier, "match_id": match.match_id,
+            "kickoff": match.kickoff.isoformat(), "checkpoint": "T24", "at": self.clock().isoformat(),
+            "analysis_id": capture["analysis_id"], "candidate_id": None, "reason": reason}
+        if item:
+            candidate = SalaBetService(self.repository, clock=self.clock).create_batch_candidate(
+                BetCandidateCreate(analysis_id=item["analysis_id"], prediction_id=item["prediction_id"],
+                    market=item["market"], selection=item["selection"]),
+                {"ranking_score": item["ranking_score"], "ranking_reasons":
+                    ["Automazione Serie A T−24", *item["reasons"]], "batch_status": item["status"],
+                 "data_quality": item["data_quality"], "sample_size": item["sample_size"],
+                 "score_breakdown": item["score_breakdown"], "blockers": item["blockers"],
+                 "automation_checkpoint": "T24"})
+            payload["candidate_id"] = str(candidate.id)
+        self._append(identifier, payload)
+        return payload
 
     async def collect_due(self, targets):
         self.control.settings = self.settings
-        report = {"enabled": self.control.policy()["enabled"], "captured": [], "failed": []}
+        report = {"enabled": self.control.policy()["enabled"], "captured": [], "failed": [], "transferred": []}
         if not report["enabled"]:
             return report
         if self.control.policy().get("persisted"):
@@ -180,10 +196,6 @@ class TimingComparisonService:
                 due = match.kickoff - offset
                 if not (due <= self.clock() < due + GRACE and self.clock() < match.kickoff):
                     continue
-                if name == "T30":
-                    previous = self.view(match.match_id, match.kickoff.isoformat())["checkpoints"]["T24"]["capture"]
-                    if not previous or not previous["preselected"]:
-                        continue
                 if not self._claim(match, name):
                     continue
                 try:
@@ -200,69 +212,37 @@ class TimingComparisonService:
                         "match_id": match.match_id, "kickoff": match.kickoff.isoformat(),
                         "checkpoint": name, "at": self.clock().isoformat(), "diagnostic": diagnostic})
                     report["failed"].append(diagnostic)
+        for capture in self.rows():
+            if capture["kind"] != "CAPTURE" or capture["checkpoint"] != "T24" or not capture.get("match"):
+                continue
+            match = Match.model_validate(capture["match"])
+            if match.competition not in allowed:
+                continue
+            try:
+                transferred = self._transfer(match, capture)
+                if transferred and transferred["candidate_id"]:
+                    report["transferred"].append(transferred)
+            except Exception as error:
+                report["failed"].append(failure_detail(error, match_id=match.match_id,
+                    checkpoint="T24", stage="T24_CANDIDATE_TRANSFER"))
         return report
 
     def report(self):
-        from better.domain.enums import MarketType
-        from better.services.validation_cohort import ValidationCohortService
         rows = self.rows()
-        captures = [r for r in rows if r["kind"] == "CAPTURE"]
-        groups = {}
-        for row in captures:
-            groups.setdefault((row["match_id"], row["kickoff"]), {})[row["checkpoint"]] = row
-        results = self.repository.all_records("match_results")
-        metrics = {}
-        for (match_id, kickoff), pair in groups.items():
-            if set(pair) != set(WINDOWS):
-                continue
-            if any(r.get("match_id") == match_id and r.get("final_status") == "CONFLICT" for r in results):
-                continue
-            finals = [r for r in results if r.get("match_id") == match_id
-                      and r.get("final_status") == "FINAL" and r.get("source_tier") in {"A", "B"}
-                      and r.get("home_score") is not None and r.get("away_score") is not None
-                      and moment(kickoff) <= moment(r["verified_at"]) <= self.clock()]
-            scores = {(r["home_score"], r["away_score"]) for r in finals}
-            if len(scores) != 1:
-                continue
-            home, away = next(iter(scores))
-            for initial in pair["T24"]["markets"]:
-                updated = next((m for m in pair["T30"]["markets"] if all(m[k] == initial[k] for k in ("model", "version", "market"))), None)
-                if not updated or set(initial["probabilities"]) != set(updated["probabilities"]):
-                    continue
-                key = (initial["model"], initial["version"], initial["market"])
-                actual = ValidationCohortService.actual_selection(MarketType(initial["market"]), home, away)
-                bucket = metrics.setdefault(key, {name: [] for name in WINDOWS})
-                for name, m in (("T24", initial), ("T30", updated)):
-                    probs = m["probabilities"]
-                    bucket[name].append({"brier": sum((p - int(s == actual)) ** 2 for s, p in probs.items()),
-                        "correct": int(m["selection"] == actual), "confidence": probs[m["selection"]],
-                        "odds": m["odds"], "return": (m["odds"] if m["selection"] == actual else 0) - 1 if m["odds"] else None})
-        output = []
-        for (model, version, market), values in metrics.items():
-            item = {"model": model, "version": version, "market": market, "pairs": len(values["T24"])}
-            for name, observations in values.items():
-                calibration = []
-                for low in range(10):
-                    members = [r for r in observations if min(int(r["confidence"] * 10), 9) == low]
-                    if members:
-                        calibration.append({"lower": low / 10, "count": len(members),
-                            "probability": mean(r["confidence"] for r in members), "frequency": mean(r["correct"] for r in members)})
-                priced = [r for r in observations if r["return"] is not None]
-                item[name] = {"brier": mean(r["brier"] for r in observations),
-                    "accuracy": mean(r["correct"] for r in observations), "calibration": calibration,
-                    "mean_odds": mean(r["odds"] for r in priced) if priced else None,
-                    "priced_samples": len(priced), "theoretical_roi": mean(r["return"] for r in priced) if priced else None}
-            output.append(item)
+        captures = [r for r in rows if r["kind"] == "CAPTURE" and r["checkpoint"] == "T24"]
+        transfers = [r for r in rows if r["kind"] == "TRANSFER"]
         matches = len({(r["match_id"], r["kickoff"]) for r in captures})
         control = self.control.report()
-        return {"enabled": control["enabled"], "scope": "SERIE_A_ONLY",
-            "control": control, "paid_research": control["paid_research"], "added_paid_budget": 0,
-            "proposed_budget": {"per_match": float(control["per_match_eur"]),
+        return {"enabled": control["enabled"], "scope": "SERIE_A_ONLY", "mode": "T24_ONLY",
+            "checkpoints": ["T24"], "control": control, "paid_research": control["paid_research"],
+            "added_paid_budget": 0, "proposed_budget": {"per_match": float(control["per_match_eur"]),
                 "per_day": float(control["per_day_eur"]), "per_week": float(control["per_week_eur"]),
                 "currency": "EUR", "approved": self.control.policy().get("persisted", False)},
-            "captures": len(captures), "matches": matches, "metrics": output,
+            "captures": len(captures), "matches": matches, "metrics": [],
+            "transferred": sum(bool(r.get("candidate_id")) for r in transfers),
+            "not_eligible": [r for r in transfers if not r.get("candidate_id")],
             "calls": sum(r["calls"] for r in captures), "cost": sum(r["cost"] for r in captures),
             "unknown_cost_captures": sum(not r.get("cost_known", True) for r in captures),
             "cost_per_match": sum(r["cost"] for r in captures) / matches if matches and all(r.get("cost_known", True) for r in captures) else None,
-            "failed": [r for r in rows if r["kind"] == "FAILED"][-10:],
-            "note": "Esperimento separato dal Validator. ROI teorico su singole a quota rilevata; non sono movimenti Banca."}
+            "failed": [r for r in rows if r["kind"] == "FAILED" and r["checkpoint"] == "T24"][-10:],
+            "note": "Analisi Serie A T−24; candidate entro 24 ore dal kickoff. Nessun confronto successivo e nessuna puntata automatica."}

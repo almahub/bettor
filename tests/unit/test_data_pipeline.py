@@ -68,3 +68,36 @@ async def test_selected_match_collector_captures_each_checkpoint_once():
     assert second["captured"] == []
     assert second["skipped"] == first["captured"]
     assert len(repository.list_records("historical_observations")) == 1
+
+
+async def test_automation_targets_include_unselected_cohort_matches(monkeypatch):
+    from better.config import Settings
+    from better.services.application import make_application
+    from better.services.data_pipeline import DataPipelineCollector
+    from better.services.timing_comparison import TimingComparisonService
+    from better.services.validation_cohort import ValidationCohortService
+
+    now = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
+    repo = Repository('sqlite:///:memory:')
+    runtime = make_application(settings=Settings(), repository=repo, demo='bet', as_of=now)
+    match = await runtime.providers.fixtures.get_match('demo-match')
+    captured_targets = []
+
+    async def enroll(self, at):
+        return {'enrolled': 0}
+
+    async def timing(self, targets):
+        captured_targets.extend(targets)
+        return {'captured': [], 'failed': []}
+
+    monkeypatch.setattr(ValidationCohortService, 'auto_enroll', enroll)
+    monkeypatch.setattr(ValidationCohortService, 'active_pre_match',
+        lambda self, at: [{'match_id': match.match_id, 'match': match.model_dump(mode='json')}])
+    monkeypatch.setattr(TimingComparisonService, 'collect_due', timing)
+    assert not repo.active_collection_selections(now)
+    try:
+        await DataPipelineCollector(runtime, clock=lambda: now).collect_due()
+        assert any(row['match_id'] == match.match_id for row in captured_targets)
+    finally:
+        await runtime.close()
+        repo.close()

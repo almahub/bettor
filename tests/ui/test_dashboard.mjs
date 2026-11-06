@@ -340,10 +340,8 @@ test('dashboard controller renders every decision and view from backend contract
   await click({page:'portfolio'});
   assert.equal(location.href,'/salabet#bank','Legacy bank navigation redirects to SalaBet');
   await click({page:'models'});
-  assert.match(markup(),/Confronto Serie A · T−24 \/ T−30/);
-  assert.match(markup(),/Nessuna coppia conclusa confrontabile/);
-  assert.match(markup(),/Massimali ricerche automatiche/);
-  assert.match(markup(),/campione operativo del Validator/);
+  assert.doesNotMatch(markup(),/Confronto Serie A|Nessuna coppia conclusa confrontabile/);
+  assert.match(markup(),/Model Validator lavora separatamente/);
   assert.ok(!markup().includes('StatsBomb'));
   const lookupReport=(id)=>({match_id:id,home_team:'Lookup Home',away_team:'Lookup Away',collected_at:'2026-09-28T10:00:00Z',checked_at:'2026-09-28T10:00:00Z',cached:false,sections:[],football_data_research:{status:'OK',provider:'openai_football_data_research',transport:'agents_api',agent_id:'agent_data_123',session_id:'sess_data',response_id:'turn_data',requested_fields:['recent_form'],cached:false,search_calls:1,tool_calls:1,input_tokens:90,output_tokens:30,duration_ms:400,estimated_cost:'0.01',findings:[]},external_research:{status:'OK',provider:'openai_web_search',transport:'agents_api',agent_id:'agent_saved_123',session_id:'sess_123',response_id:'turn_123',model:'gpt-test',searched_fields:['news'],cached:false,search_calls:1,tool_calls:1,input_tokens:100,output_tokens:20,duration_ms:450,estimated_cost:'0.011',coverage:{before:1,after:0,found:1},findings:[{field:'news',status:'FOUND',confidence:0.9,notes:'Official update',sources:[{url:'https://club.example/news',publisher:'Club',source_type:'OFFICIAL_CLUB',reliability_tier:'A',published_at:'2026-09-28T09:00:00Z',retrieved_at:'2026-09-28T10:00:00Z',title:'Team news'}]}]},history:{settled_predictions:0,minimum_sample:200,note:'No validated history'}});
   contracts['/matches/filter-test/research']=lookupReport('filter-test');

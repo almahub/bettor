@@ -30,7 +30,9 @@ async def experiment():
 
     async def analyze(request, **options):
         calls.append(options)
-        return run_at(clock[0])
+        run = run_at(clock[0])
+        repo.save_run(run)
+        return run
 
     runtime = SimpleNamespace(repository=repo, settings=settings, analyze=analyze)
     service = TimingComparisonService(runtime, clock=lambda: clock[0])
@@ -39,26 +41,28 @@ async def experiment():
     repo.close()
 
 
-async def test_checkpoints_are_paired_persisted_and_idempotent_after_restart(experiment):
+async def test_t24_candidate_persisted_once_and_no_t30_after_restart(experiment):
     service, repo, match, clock, calls, _ = experiment
-    before = {table: repo.all_records(table) for table in ('bet_slips', 'canonical_predictions', 'validation_observations')}
-    bank_before = repo.all_records('annotations', entity_id='bank:EUR:v1')
+    before = {t: repo.all_records(t) for t in ('bet_slips','canonical_predictions','validation_observations')}
+    bank = repo.all_records('annotations', entity_id='bank:EUR:v1')
     first = await service.collect_due([match.model_dump(mode='json')])
     assert len(first['captured']) == 1
-    assert first['captured'][0]['checkpoint'] == 'T24'
+    assert len(first['transferred']) == 1
+    candidate = repo.all_records('bet_candidates')[0]
+    assert candidate['provenance']['automation_checkpoint'] == 'T24'
     await service.collect_due([match.model_dump(mode='json')])
     clock[0] = match.kickoff - timedelta(minutes=29)
     restarted = TimingComparisonService(service.runtime, clock=lambda: clock[0])
-    second = await restarted.collect_due([])  # persisted enrolment survives restart
-    assert len(second['captured']) == 1
-    await restarted.collect_due([])
-    assert calls == [{'cache_only_research': True}] * 2
-    view = restarted.view(match.match_id, match.kickoff.isoformat())
-    assert view['paired']
-    assert view['checkpoints']['T24']['capture']['analysis_id'] != view['checkpoints']['T30']['capture']['analysis_id']
+    second = await restarted.collect_due([])
+    assert second['captured'] == []
+    assert second['transferred'] == []
+    assert calls == [{'cache_only_research': True}]
+    assert len(repo.all_records('bet_candidates')) == 1
+    assert set(restarted.view(match.match_id, match.kickoff.isoformat())['checkpoints']) == {'T24'}
+    assert not any(r['checkpoint'] == 'T30' for r in service.rows())
     for table, rows in before.items():
         assert repo.all_records(table) == rows
-    assert repo.all_records('annotations', entity_id='bank:EUR:v1') == bank_before
+    assert repo.all_records('annotations', entity_id='bank:EUR:v1') == bank
 
 
 async def test_late_start_does_not_recreate_missing_baseline(experiment):
@@ -119,42 +123,39 @@ async def test_postkickoff_future_source_and_window_leakage_rejected(experiment)
         service.store(match, 'T24', run_at(clock[0]))
 
 
-async def test_metrics_use_paired_same_model_markets_and_verified_result(experiment):
-    service, repo, match, clock, _, _ = experiment
+async def test_t24_report_has_no_comparison_or_double_validation(experiment):
+    service, repo, match, _, _, _ = experiment
     await service.collect_due([match.model_dump(mode='json')])
-    clock[0] = match.kickoff - timedelta(minutes=29)
-    await service.collect_due([])
-    assert service.report()['metrics'] == []
-    result = {'match_id': match.match_id, 'final_status': 'FINAL', 'home_score': 2, 'away_score': 1,
-              'source_tier': 'B', 'verified_at': (match.kickoff + timedelta(hours=2)).isoformat()}
-    with repo.engine.begin() as conn:
-        repo._append(conn, 'match_results', identifier='result', entity_id=match.match_id, match_id=match.match_id, payload=result)
-    clock[0] = match.kickoff + timedelta(hours=3)
     report = service.report()
-    assert report['metrics']
-    for group in report['metrics']:
-        assert group['pairs'] == 1
-        assert group['T24']['brier'] == group['T30']['brier']
-        assert group['T24']['calibration'][0]['count'] == 1
-    assert report['calls'] == 0
-    assert report['cost_per_match'] == 0
+    assert report['mode'] == 'T24_ONLY'
+    assert report['checkpoints'] == ['T24']
+    assert report['metrics'] == []
+    assert report['transferred'] == 1
     assert not repo.all_records('validation_observations')
-    assert not repo.all_records('annotations', entity_id='bank:EUR:v1')
 
 
-async def test_candidate_comparison_does_not_change_candidate(experiment):
-    service, _, match, clock, _, _ = experiment
-    await service.collect_due([match.model_dump(mode='json')])
-    clock[0] = match.kickoff - timedelta(minutes=29)
+async def test_capture_before_crash_is_transferred_without_research_again(experiment):
+    service, repo, match, clock, calls, run_at = experiment
+    run = run_at(clock[0])
+    repo.save_run(run)
+    assert service._claim(match, 'T24')
+    service.store(match, 'T24', run)
+    restarted = TimingComparisonService(service.runtime, clock=lambda: clock[0])
+    await restarted.collect_due([])
+    await restarted.collect_due([])
+    assert calls == []
+    assert len(repo.all_records('bet_candidates')) == 1
+
+
+async def test_unusable_forecast_is_explicit_and_not_transferred(experiment):
+    service, repo, match, clock, _, run_at = experiment
+    run = run_at(clock[0]).model_copy(update={'forecast': None})
+    repo.save_run(run)
+    assert service._claim(match, 'T24')
+    service.store(match, 'T24', run)
     await service.collect_due([])
-    markets = service.view(match.match_id, match.kickoff.isoformat())['checkpoints']['T30']['capture']['markets']
-    model = markets[0]
-    candidate = {'model_name': model['model'], 'model_version': model['version'],
-                 'market': model['market'], 'selection': 'IMPOSSIBLE'}
-    view = service.view(match.match_id, match.kickoff.isoformat(), candidate=candidate)
-    assert view['verdict'] == 'CHANGED'
-    assert candidate['selection'] == 'IMPOSSIBLE'
-    assert view['checkpoints']['T30']['capture']['lineup_status'] == 'CONFIRMED_LINEUP'
+    assert not repo.all_records('bet_candidates')
+    assert service.report()['not_eligible'][0]['reason'] == 'MODEL_INPUT_INSUFFICIENT'
 
 
 def test_timing_settings_do_not_change_decision_hash():

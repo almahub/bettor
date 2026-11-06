@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 
-test('SalaBet candidate shows paired checkpoint details without changing slips or bank',async()=>{
+test('SalaBet shows only T24 even with historical T30 captures',async()=>{
   const nodes=new Map();const listeners={};const requests=[];
   function node(id){if(!nodes.has(id))nodes.set(id,{innerHTML:'',textContent:'',hidden:true,addEventListener(){}});return nodes.get(id);}
   globalThis.document={querySelector:node,getElementById:node,addEventListener(name,fn){listeners[name]=fn;}};
@@ -19,12 +19,10 @@ test('SalaBet candidate shows paired checkpoint details without changing slips o
   };
   await import('../../better/web/salabet.mjs');
   const markup=node('#app').innerHTML;
-  assert.match(markup,/<summary>Confronta analisi<\/summary>/);
-  assert.match(markup,/T−24: Completato · T−30: Dati mancanti/);
-  assert.match(markup,/Cambiata/);
+  assert.match(markup,/Analisi Serie A T−24/);
+  assert.match(markup,/Completata/);
   assert.match(markup,/Automazione disattivata/);
   assert.match(markup,/href="\/#analysis\/a1"/);
-  assert.match(markup,/href="\/#analysis\/a2"/);
-  assert.match(markup,/Le schedine esistenti non vengono modificate/);
+  assert.doesNotMatch(markup,/Confronta analisi|Confronto T|href="\/#analysis\/a2"/);
   assert.equal(requests.some(([,options])=>options.method==='POST'),false);
 });

@@ -16,7 +16,7 @@ Richiede Python 3.12 e Inno Setup 6.
 2. .cache/packaging-venv/Scripts/python.exe -m pip install .[dev] pyinstaller
 3. powershell -File scripts/build-windows.ps1 -Iscc "C:/Program Files (x86)/Inno Setup 6/ISCC.exe"
 
-Output dist/installer/Better-Setup-0.2.0-x64.exe e .sha256.
+Output dist/installer/Better-Setup-VERSION-x64.exe e .sha256.
 Bundle con soli codice, web e config/888; esclusi database, .env e archivi personali. Revisionare comunque i file config prima di pubblicare.
 
 ## GitHub e aggiornamenti
@@ -37,3 +37,7 @@ Notifica integrata, arresto automatico coordinato con collector, migrazione guid
 663 test Python, 25 test UI passati; Ruff passato. Smoke del bundle autonomo con PATH senza Python: health ok, pagina iniziale, identità e riapertura senza duplicare il server. Backup eseguito anche dal programma compilato. Primo aggiornamento temporaneamente bloccato su un file occupato: reinstallazione successiva completata, hash del database di prova invariato. Resta necessario un collaudo su VM/PC pulito: i test svolti qui non equivalgono a quella verifica.
 
 La modalità /NOICONS è stata verificata sul setup finale: nessun collegamento creato. Disinstallazione di prova con dati personali conservati.
+
+## Versione 0.2.1
+
+Automazione Serie A solo T24, senza confronto T30. Dettagli in [Automazione Serie A](serie-a-automation.md).

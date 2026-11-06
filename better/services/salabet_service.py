@@ -202,6 +202,7 @@ class SalaBetService:
             created_at=self.clock(),
             provenance={
                 "analysis_as_of": run.as_of.isoformat(),
+                "automation_checkpoint": batch.get("automation_checkpoint") if batch else None,
                 "prediction_data_cutoff": prediction.data_cutoff.isoformat(),
                 "model": f"{prediction.model}:{prediction.model_version}",
                 "quote_source": (
@@ -655,11 +656,7 @@ class SalaBetService:
         document["selections"] = selections
         automatic = self.repository.all_records("annotations", entity_id="auto-multiple-slip:" + str(slip.id))
         document["automatic_preparation"] = automatic[0] if automatic else None
-        if self.settings is not None and slip.status in {"DRAFT", "READY", "PLACED", "OPEN"}:
-            from better.services.slip_checkpoint_review import SlipCheckpointReview
-            if self._checkpoint_reviewer is None:
-                self._checkpoint_reviewer = SlipCheckpointReview(self.repository, self.settings, self.clock)
-            document["checkpoint_review"] = self._checkpoint_reviewer.review(slip)
+        document["checkpoint_review"] = None
         return document
 
     def _verified_result(self, match_id):

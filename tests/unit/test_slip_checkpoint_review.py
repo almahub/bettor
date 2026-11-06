@@ -64,7 +64,7 @@ async def test_pending_missing_and_confirmation_are_read_only(review_case):
     assert first['selections'][0]['status'] == 'CONFIRMED'
     assert read(review_case) == first
     view = SalaBetService(repo, clock=lambda: clock[0], settings=settings).slip_view(slip)
-    assert view['checkpoint_review'] == first
+    assert view['checkpoint_review'] is None  # Historical reader retained, normal UI has no T30.
     for table, rows in before.items():
         assert repo.all_records(table) == rows
     assert SalaBetService(repo).get_slip(slip.id) == slip
