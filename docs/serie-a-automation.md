@@ -12,7 +12,7 @@ Con Automazione Serie A attiva il collector scopre le partite presenti nel catal
 - La preparazione delle multiple resta manuale e seleziona fra le candidate ancora future nella finestra delle prossime 24 ore, al massimo sei partite. Tutti i kickoff del gruppo ricadono quindi in un intervallo massimo di 24 ore.
 - Non vengono create/confermate schedine o registrati movimenti Banca dall'analisi automatica.
 
-Un checkpoint T24 mancato non è ricreato retroattivamente; la UI lo segnala. La disponibilità dipende dal catalogo, dalle fonti e dal fatto che PC e Better siano accesi. L'interruttore conserva la scelta dell'utente durante l'aggiornamento.
+Un checkpoint T24 mancato non è ricreato retroattivamente; la UI lo segnala. La disponibilità dipende dal catalogo, dalle fonti e dal fatto che PC e Bettor siano accesi. L'interruttore conserva la scelta dell'utente durante l'aggiornamento.
 
 I checkpoint passati T30 rimangono nello storico append-only; il lettore storico interno è conservato per compatibilità, senza essere usato dalla UI operativa. Il Validator e la raccolta/settlement della coorte non sono stati modificati. La chiave API storica timing_comparison resta compatibile: restituisce mode=T24_ONLY e nessuna metrica di confronto.
 

@@ -1,13 +1,18 @@
-name: Windows setup
+name: Bettor Windows release
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
 permissions:
   contents: write
+concurrency:
+  group: better-windows-release
+  cancel-in-progress: false
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      OPENAI_USAGE_LIVE_ENABLED: "false"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,7 +22,8 @@ jobs:
         shell: pwsh
         run: |
           python -m venv .cache/packaging-venv
-          .cache/packaging-venv/Scripts/python.exe -m pip install .[dev] pyinstaller
+          .cache/packaging-venv/Scripts/python.exe -m pip install .[dev,desktop] pyinstaller
+          New-Item -ItemType Junction -Path .venv -Target (Resolve-Path .cache/packaging-venv).Path | Out-Null
       - name: Tests
         shell: pwsh
         run: |
@@ -32,11 +38,12 @@ jobs:
           ./scripts/build-windows.ps1 -Iscc $Compiler.FullName
       - uses: actions/upload-artifact@v4
         with:
-          name: Better-Windows-Setup
+          name: Bettor-Windows-Setup
           path: dist/installer/*
-      - name: Draft release only
+      - name: Publish verified update and retain three releases
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
         shell: pwsh
-        run: gh release create ${{ github.ref_name }} dist/installer/* --draft --generate-notes --title "Better ${{ github.ref_name }}"
+        run: .cache/packaging-venv/Scripts/python.exe scripts/publish-release.py --tag "$env:RELEASE_TAG"

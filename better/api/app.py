@@ -42,7 +42,7 @@ def create_app(orchestrator=None, *, demo=None):
         if owned:
             await app.state.orchestrator.close()
 
-    app = FastAPI(title="Better Football Decision Support", version=__version__, lifespan=lifespan)
+    app = FastAPI(title="Bettor Football Decision Support", version=__version__, lifespan=lifespan)
     app.state.orchestrator = orchestrator
     requests = defaultdict(deque)
 
@@ -125,6 +125,11 @@ def create_app(orchestrator=None, *, demo=None):
         get_run(analysis_id)
         return runtime().repository.list_records("shadow_decisions", entity_id=analysis_id)
 
+    @app.get('/models/diagnostics')
+    async def model_diagnostics():
+        from better.services.model_diagnostics import ModelDiagnostics
+        return ModelDiagnostics(runtime().repository).report()
+
     @app.get("/models")
     async def models():
         return [
@@ -161,6 +166,8 @@ def create_app(orchestrator=None, *, demo=None):
 
     mount_dashboard(app, runtime, check_rate_limit)
     mount_salabet(app, runtime, check_rate_limit)
+    from better.api.settings import mount_settings
+    mount_settings(app, runtime)
     return app
 
 

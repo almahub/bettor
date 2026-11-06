@@ -23,3 +23,12 @@ run-temp*/
 build/
 .env.*
 !.env.example
+*.dpapi
+settings-checks.json
+restore-pending.json
+restore-result.json
+
+# Private handoffs and operational reviews are not public documentation.
+docs/HANDOFF.md
+docs/audits/
+docs/reviews/

@@ -32,11 +32,13 @@ def main():
                 "/system/ai-agents",
                 "/matches",
                 "/models",
+                "/models/diagnostics",
                 "/metrics",
                 "/bank",
                 "/api-control",
                 "/data-pipeline",
                 "/salabet/candidates",
+                "/salabet/automatic-multiples",
                 "/salabet/slips",
             )
         }

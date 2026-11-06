@@ -15,7 +15,7 @@ test('SalaBet Banca edits research limits without changing bankroll or creating 
   };
   await import('../../better/web/salabet.mjs');
   assert.match(node('#app').innerHTML,/Massimali ricerche automatiche/);
-  assert.match(node('#app').innerHTML,/Spesa reale OpenAI, separata dal saldo di test/);
+  assert.match(node('#app').innerHTML,/Spesa reale OpenAI, separata dal saldo delle puntate/);
   node('#research-per_match_eur').value='-1';
   node('#research-per_day_eur').value='5';node('#research-per_week_eur').value='25';
   const click=()=>listeners.click({target:{closest(){return {dataset:{action:'research-budget-save'}};}}});

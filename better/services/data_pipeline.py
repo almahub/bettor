@@ -397,9 +397,12 @@ class DataPipelineCollector:
         policy = DataPipelineService(self.runtime.repository, settings=self.runtime.settings)
         age = (now - self.heartbeat_at).total_seconds() if self.heartbeat_at else None
         recent = age is not None and 0 <= age <= policy.poll_seconds * 2
-        active = bool(recent and (self.loop_active or self.running))
+        from pathlib import Path
+        restore_paused = Path("restore-pending.json").exists()
+        active = bool(recent and (self.loop_active or self.running)) and not restore_paused
         status = (
-            "STALE" if (self.loop_active or self.running) and not recent
+            "RESTORE_PENDING" if restore_paused
+            else "STALE" if (self.loop_active or self.running) and not recent
             else "STOPPED" if not active
             else "DEGRADED" if self.last_errors
             else "RUNNING" if self.running else "OK"
@@ -424,6 +427,9 @@ class DataPipelineCollector:
             )
 
     async def collect_due(self):
+        from pathlib import Path
+        if Path("restore-pending.json").exists():
+            return {"captured": [], "skipped": [], "failed": [], "maintenance": "RESTORE_PENDING"}
         async with self._cycle_lock:
             self.running = True
             self.started_at = self.heartbeat_at = self.clock()
@@ -504,7 +510,7 @@ class DataPipelineCollector:
             timing_result = await TimingComparisonService(self.runtime, clock=self.clock).collect_due(timing_targets.values())
             from better.services.automatic_multiples import AutomaticMultiples
             try:
-                multiples_result = AutomaticMultiples(self.runtime, clock=self.clock).collect()
+                multiples_result = await AutomaticMultiples(self.runtime, clock=self.clock).collect_verified()
             except Exception as error:
                 multiples_result = {"created": [], "error": failure_detail(error, stage="AUTOMATIC_MULTIPLES")}
             captured, skipped, failed = [], [], []

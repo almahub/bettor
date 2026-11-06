@@ -1,43 +1,42 @@
-# Better per Windows
+# Bettor per Windows
 
-## Stato effettivo
-Launcher, bundle PyInstaller, setup Inno Setup e workflow GitHub predisposti. Bundle autonomo compilato e avviato senza Python nel PATH, health e doppio avvio verificati; setup Inno Setup compilato (circa 19,6 MB). Installazione e reinstallazione di aggiornamento collaudate in .cache/installed-better, database e .env di prova invariati e backup creati. Sorgenti pubblicati nella repository almahub/bettor. Prima release v0.2.0 creata in bozza con setup e checksum: https://github.com/almahub/bettor/releases. Da collaudare su un secondo PC prima della pubblicazione.
+Versione corrente **0.2.6**: finestra desktop pywebview/WebView2, servizio locale separato e primo avvio guidato. Vedi [primo avvio](desktop-first-run.md) e [backup/rilascio](backup-and-releases.md).
 
 ## Percorsi
-Programma: %LOCALAPPDATA%/Programs/Better.
-Dati: %LOCALAPPDATA%/Better; database data/888-real.db; config/888; chiavi .env; log data/logs.
-L'istanza D:/bettor resta separata e non viene migrata automaticamente.
-Installazione nuova: database vuoto, nessuna chiave inclusa, collector disattivato. Configurare il nuovo .env; BETTER_PIPELINE_AUTO_COLLECT=true abilita il collector. Ogni PC mantiene un database distinto.
+
+- Programma: `%LOCALAPPDATA%/Programs/Better/Better.exe`.
+- Dati: `%LOCALAPPDATA%/Better`; database `data/888-real.db`, configurazione `config/888`.
+- Credenziali: `credentials.dpapi`, protette dall'account Windows, gestite dalla UI.
+- Log: `data/logs/better.jsonl` e `logs/desktop.log`.
+
+I percorsi legacy restano invariati per riutilizzare i dati. Il setup non importa automaticamente database da cartelle sorgenti o altri PC.
 
 ## Build Windows x64
-Richiede Python 3.12 e Inno Setup 6.
 
-1. python -m venv .cache/packaging-venv
-2. .cache/packaging-venv/Scripts/python.exe -m pip install .[dev] pyinstaller
-3. powershell -File scripts/build-windows.ps1 -Iscc "C:/Program Files (x86)/Inno Setup 6/ISCC.exe"
+Richiede Python 3.12, Node.js e Inno Setup 6:
 
-Output dist/installer/Better-Setup-VERSION-x64.exe e .sha256.
-Bundle con soli codice, web e config/888; esclusi database, .env e archivi personali. Revisionare comunque i file config prima di pubblicare.
+```powershell
+python -m venv .cache/packaging-venv
+.cache/packaging-venv/Scripts/python.exe -m pip install '.[dev,desktop]' pyinstaller
+powershell -File scripts/build-windows.ps1 -Iscc 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+```
 
-## GitHub e aggiornamenti
-Workflow .github/workflows/windows-release.yml: test, build, artefatto; un tag vVERSION produce una release BOZZA. Tag, pyproject.toml e better/__init__.py devono coincidere. Prima di caricare i sorgenti revisionare i file: non caricare indiscriminatamente D:/bettor.
+Output: `dist/installer/Bettor-Setup-VERSION-x64.exe` e `.sha256`. L'alias identico `Better-Setup-VERSION-x64.exe` serve ai client precedenti. Il bundle include solo codice, web e configurazione pubblica: nessun database, backup, log o chiave personale.
 
-scripts/download-update.ps1 scarica l'ultima release pubblicata di almahub/bettor e verifica SHA-256. Non avvia il setup. SHA-256 non sostituisce una firma del produttore; firma del setup non ancora configurata.
+Il setup verifica WebView2 e, se assente, indica il download Microsoft senza cancellare dati. Il setup non è firmato digitalmente: SHA256 verifica l'integrità rispetto al checksum pubblicato, non sostituisce una firma del produttore.
 
-Chiudere Better con Ctrl+C nella console dopo la conclusione del collector. Il setup interroga il vecchio launcher prima dell'aggiornamento: backend attivo o backup fallito bloccano l'installazione. Backup coerenti SQLite in backups/TIMESTAMP/data. Configurazioni e chiavi non sovrascritte; dati personali conservati alla disinstallazione.
-Rollback manuale: conservare il setup precedente e ripristinare, da fermo, versione e backup pre-aggiornamento se necessario.
+## Aggiornamento e disinstallazione
 
-## Collaudo richiesto prima della pubblicazione
-Su VM pulita senza Python verificare: installazione, health e pagina iniziale, doppio avvio, porta occupata, aggiornamento bloccato con backend attivo, aggiornamento da fermo con backup e dati invariati, disinstallazione con dati conservati. Non usare il database operativo.
+Chiudere la finestra e arrestare il servizio dal menu Start prima di aggiornare. L'installazione crea un backup completo verificato e si interrompe se il backend è attivo o il backup fallisce. I dati sono conservati.
 
-Notifica integrata, arresto automatico coordinato con collector, migrazione guidata dell'archivio attuale e rollback automatico non implementati in questo primo blocco.
+La disinstallazione richiede la finestra chiusa, tenta l'arresto controllato del servizio e conserva dati/backup. Rimuove il marcatore di primo avvio: la reinstallazione chiede se mantenere i dati, iniziare da zero o ripristinare.
 
-## Verifiche 6 novembre 2026
+## Pubblicazione
 
-663 test Python, 25 test UI passati; Ruff passato. Smoke del bundle autonomo con PATH senza Python: health ok, pagina iniziale, identità e riapertura senza duplicare il server. Backup eseguito anche dal programma compilato. Primo aggiornamento temporaneamente bloccato su un file occupato: reinstallazione successiva completata, hash del database di prova invariato. Resta necessario un collaudo su VM/PC pulito: i test svolti qui non equivalgono a quella verifica.
+Il workflow `windows-release.yml` esegue suite Python/UI, build e pubblicazione stabile per un tag `vVERSION`. Tag, `pyproject.toml` e `better/__init__.py` devono coincidere. Gli asset vengono riscaricati e confrontati prima della pubblicazione; solo dopo la verifica della release si eliminano quelle oltre le tre conservate, senza eliminare tag o commit.
 
-La modalità /NOICONS è stata verificata sul setup finale: nessun collegamento creato. Disinstallazione di prova con dati personali conservati.
+## Verifiche e limiti
 
-## Versione 0.2.1
+Collaudati localmente: bundle autonomo, finestra desktop, archivio vuoto senza fondi/giocate, avvisi credenziali, backup/ripristino isolato con confronto database, aggiornamento conservativo e arresto sullo stesso event loop dei provider.
 
-Automazione Serie A solo T24, senza confronto T30. Dettagli in [Automazione Serie A](serie-a-automation.md).
+Rimangono da effettuare il collaudo su un secondo PC/VM pulita e l'ispezione visiva automatizzata completa. I test svolti non equivalgono a queste verifiche.

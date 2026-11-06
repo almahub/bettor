@@ -450,8 +450,10 @@ def mount_dashboard(app, runtime, check_rate_limit):
             entity_id="football-data:standings:football-data:competition:2019:checks",
         )
         standings_check = next(iter(standings_checks), None)
+        from better.services.installation_status import installation_status
         return {
             "is_demo": is_demo,
+            "installation": installation_status(engine) if not is_demo else None,
             "statistics_source": type(engine.providers.stats).__name__,
             "sportradar": sportradar.describe() if sportradar else None,
             "api_football": api_football.describe() if api_football else None,

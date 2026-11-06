@@ -5,6 +5,11 @@ from pathlib import Path
 
 
 def environment_value(name, path=Path(".env")):
+    from better.services.credential_store import MANAGED_NAMES, active_values
+    if name in MANAGED_NAMES:
+        saved = active_values(Path(path).resolve().parent)
+        if name in saved:
+            return saved[name] or ""
     value = os.environ.get(name)
     if value is not None:
         return value.strip()

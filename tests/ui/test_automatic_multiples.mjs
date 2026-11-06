@@ -5,7 +5,7 @@ test('one approval prepares ready tickets from six visible matches within 24h wi
  const nodes=new Map(),listeners={},requests=[];
  const selected=Array.from({length:6},(_,i)=>({match:'Home '+i+' - Away '+i,kickoff:'2026-11-06T19:45:00Z',market:'1X2',selection:'HOME',status:'INDICATIVE',ranking_score:50,probability:.6,odds:2,reasons:['Validator insufficiente']}));
  const plan={plan_id:'reviewed-plan',turn:'week',budget_eur:'50.00',selected,considered:10,eligible_24h:8,note:'Solo prossime 24 ore'};
- let report={proposal:plan,allocated_eur:'0',unallocated_eur:'50',preparations:[],note:'Conferma manuale; nessun movimento Banca.'};
+ let report={budget_eur:'50',proposal:plan,allocated_eur:'0',unallocated_eur:'50',preparations:[],note:'Conferma manuale; nessun movimento Banca.'};
  function node(id){if(!nodes.has(id))nodes.set(id,{innerHTML:'',textContent:'',value:'',hidden:true,addEventListener(){}});return nodes.get(id);}
  globalThis.document={querySelector:node,getElementById:id=>node('#'+id),addEventListener(name,fn){listeners[name]=fn;}};
  globalThis.location={hash:'#candidates'};
@@ -13,6 +13,7 @@ test('one approval prepares ready tickets from six visible matches within 24h wi
  globalThis.fetch=async(path,options)=>{
   requests.push([path,options]);
   let value=path==='/bank'||path==='/salabet/stats'?{}:[];
+  if(path==='/salabet/automatic-multiples/budget'){const body=JSON.parse(options.body);assert.equal(body.budget_eur,'75');report={...report,budget_eur:'75',unallocated_eur:'75',proposal:{...report.proposal,budget_eur:'75'}};value=report;}
   if(path==='/salabet/automatic-multiples'){
    if(options.method==='POST'){const body=JSON.parse(options.body);assert.equal(body.plan_id,plan.plan_id);assert.equal(body.enabled,true);report={...report,allocated_eur:'50',unallocated_eur:'0',preparations:[{slips:['s1','s2']}]};}
    value=report;
@@ -21,6 +22,8 @@ test('one approval prepares ready tickets from six visible matches within 24h wi
  };
  await import('../../better/web/salabet.mjs');
  assert.match(node('#app').innerHTML,/6\/6 partite selezionate/);
+ assert.match(node('#app').innerHTML,/id="multiple-budget"/);
+ assert.match(node('#app').innerHTML,/Budget totale del turno/);
  assert.doesNotMatch(node('#app').innerHTML,/raggruppamento|primo kickoff|schedine\/gruppo/);
  assert.match(node('#app').innerHTML,/Approva proposta e attiva preparazione/);
  const click=()=>listeners.click({target:{closest(){return {dataset:{action:'multiple-automation'}};}}});
@@ -29,6 +32,11 @@ test('one approval prepares ready tickets from six visible matches within 24h wi
  assert.match(node('#app').innerHTML,/Scommesse aperte/);
  assert.match(node('#toast').textContent,/Multiple preparate/);
  assert.deepEqual(requests.filter(([,o])=>o.method==='POST').map(([p])=>p),['/salabet/automatic-multiples']);
+ await listeners.click({target:{closest(){return {dataset:{page:'candidates'}};}}});
+ node('#multiple-budget').value='75';
+ await listeners.click({target:{closest(){return {dataset:{action:'multiple-budget-save'}};}}});
+ assert.equal(report.budget_eur,'75');
+ assert.match(node('#app').innerHTML,/75/);
  report={...report,allocated_eur:'0',unallocated_eur:'50',proposal:{...plan,selected:[],eligible_24h:0}};
  await listeners.click({target:{closest(){return {dataset:{page:'candidates'}};}}});
  await listeners.click({target:{closest(){return {dataset:{action:'refresh'}};}}});

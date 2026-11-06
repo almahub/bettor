@@ -14,7 +14,12 @@ from better.domain.salabet import (
     BetSlipCreate,
     BetSlipUpdate,
 )
-from better.services.automatic_multiples import AutomaticMultiples, MultipleSwitch
+from better.services.automatic_multiples import (
+    AutomaticMultiples,
+    MultipleAutoSwitch,
+    MultipleBudget,
+    MultipleSwitch,
+)
 from better.services.salabet_service import SalaBetService
 
 WEB_ROOT = Path(__file__).parents[1] / "web"
@@ -80,6 +85,19 @@ def mount_salabet(app, runtime, check_rate_limit):
     async def update_automatic_multiples(payload: MultipleSwitch, request: Request):
         mutation(request)
         return call(lambda: AutomaticMultiples(runtime()).update(payload))
+
+    @app.post('/salabet/automatic-multiples/budget')
+    async def multiple_budget(payload: MultipleBudget, request: Request):
+        mutation(request)
+        return call(lambda: AutomaticMultiples(runtime()).update_policy(payload))
+
+    @app.post('/salabet/automatic-multiples/placement')
+    async def multiple_placement(payload: MultipleAutoSwitch, request: Request):
+        mutation(request)
+        worker = AutomaticMultiples(runtime())
+        call(lambda: worker.update_policy(payload))
+        result = await worker.collect_verified() if payload.enabled else {'enabled': False, 'created': [], 'diagnostics': []}
+        return {**worker.report(), 'execution': result}
 
     @app.post("/salabet/candidates/{candidate_id}/remove")
     async def remove_candidate(candidate_id: UUID, payload: BetSlipAction, request: Request):

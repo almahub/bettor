@@ -1,7 +1,10 @@
-param([string]$Destination = "$env:USERPROFILE\Downloads\Better")
+param([string]$Destination = "$env:USERPROFILE\Downloads\Bettor")
 $ErrorActionPreference = "Stop"
 $Release = Invoke-RestMethod -Uri 'https://api.github.com/repos/almahub/bettor/releases/latest'
-$Setups = @($Release.assets | Where-Object { $_.name -match '^Better-Setup-[0-9]+\.[0-9]+\.[0-9]+-x64\.exe$' })
+$Setups = @($Release.assets | Where-Object { $_.name -match '^Bettor-Setup-[0-9]+\.[0-9]+\.[0-9]+-x64\.exe$' })
+if ($Setups.Count -eq 0) {
+  $Setups = @($Release.assets | Where-Object { $_.name -match '^Better-Setup-[0-9]+\.[0-9]+\.[0-9]+-x64\.exe$' })
+}
 if ($Setups.Count -ne 1) { throw 'Release priva di un setup univoco' }
 $Setup = $Setups[0]
 $Checks = @($Release.assets | Where-Object { $_.name -eq ($Setup.name + '.sha256') })
@@ -19,5 +22,5 @@ if ($Expected -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileHash -LiteralPath $File
   throw 'Integrità setup non verificata: download rimosso'
 }
 Write-Output "Setup verificato: $File"
-Write-Output 'Nessuna installazione automatica. Leggi le note della release e avvia il setup quando Better è fermo.'
+Write-Output 'Nessuna installazione automatica. Leggi le note della release e avvia il setup quando Bettor è fermo.'
 Write-Output $Release.html_url

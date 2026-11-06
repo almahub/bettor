@@ -13,4 +13,8 @@ try {
   $Installer = Join-Path $Root "dist/installer/Better-Setup-$Version-x64.exe"
   $Hash = (Get-FileHash -LiteralPath $Installer -Algorithm SHA256).Hash.ToLowerInvariant()
   "$Hash  $(Split-Path $Installer -Leaf)" | Set-Content -Encoding ascii "$Installer.sha256"
+  # Preserve the legacy release asset name for existing update clients.
+  $BrandedInstaller = Join-Path $Root "dist/installer/Bettor-Setup-$Version-x64.exe"
+  Copy-Item -LiteralPath $Installer -Destination $BrandedInstaller -Force
+  "$Hash  $(Split-Path $BrandedInstaller -Leaf)" | Set-Content -Encoding ascii "$BrandedInstaller.sha256"
 } finally { Pop-Location }
