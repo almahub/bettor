@@ -23,6 +23,20 @@ function Test-BettorHealth {
 }
 
 try {
+    $InstalledHome = Join-Path $env:LOCALAPPDATA "Better"
+    $InstalledLauncher = Join-Path $env:LOCALAPPDATA "Programs\Better\Better.exe"
+    $MigrationRecord = Join-Path $InstalledHome "migration.json"
+    if (Test-Path -LiteralPath $MigrationRecord) {
+        $Migration = Get-Content -LiteralPath $MigrationRecord -Raw | ConvertFrom-Json
+        $MigrationSource = [IO.Path]::GetFullPath($Migration.source).TrimEnd('\')
+        if ($MigrationSource -eq $BettorRoot.TrimEnd('\')) {
+            if (-not (Test-Path -LiteralPath $InstalledLauncher)) {
+                throw "Il database e stato migrato. Reinstalla Better per usare l'archivio aggiornato; il vecchio database non verra riaperto automaticamente."
+            }
+            Start-Process -FilePath $InstalledLauncher -ArgumentList '--data-dir', ('"' + $InstalledHome + '"'), '--port', '8001' -WorkingDirectory $InstalledHome -WindowStyle Hidden
+            exit 0
+        }
+    }
     if (Test-BettorHealth) {
         Start-Process $DashboardUrl
         exit 0
