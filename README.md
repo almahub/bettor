@@ -2,9 +2,9 @@
 
 Applicazione Windows per analisi calcistiche, ricerca documentata, previsioni probabilistiche, validazione e gestione delle giocate in SalaBet.
 
-## Installazione Windows — 0.2.7
+## Installazione Windows — 0.2.8
 
-Scarica **Bettor-Setup-0.2.7-x64.exe** e il relativo `.sha256` da [GitHub Releases](https://github.com/almahub/bettor/releases/latest). Richiede Windows x64 e Microsoft Edge WebView2 Runtime. Python non è richiesto sul PC utente.
+Scarica **Bettor-Setup-0.2.8-x64.exe** e il relativo `.sha256` da [GitHub Releases](https://github.com/almahub/bettor/releases/latest). Richiede Windows x64 e Microsoft Edge WebView2 Runtime. Python non è richiesto sul PC utente.
 
 Il collegamento **Bettor** apre una finestra desktop senza console e barra degli indirizzi. Il primo avvio propone:
 
@@ -41,7 +41,7 @@ Chiudere la finestra lascia il servizio attivo. Per applicare configurazione o r
 - [Automazione Serie A](docs/serie-a-automation.md), [Data Pipeline](docs/data-pipeline.md)
 - [SalaBet](docs/salabet.md), [sicurezza automazioni e diagnostica](docs/placement-safety-and-model-diagnostics.md)
 - [API Control](docs/api-control.md), [ricerca AI](docs/research-agents.md)
-- [Note 0.2.7](docs/releases/0.2.7.md)
+- [Note 0.2.8](docs/releases/0.2.8.md)
 
 ## Sviluppo
 
@@ -49,6 +49,7 @@ Python 3.12+, Node.js per i test UI, dipendenze fissate in `uv.lock`:
 
 ```powershell
 uv sync --locked --extra dev --extra desktop
+New-Item -ItemType Directory -Path .cache -Force | Out-Null
 $env:OPENAI_USAGE_LIVE_ENABLED = 'false'
 .venv/Scripts/python.exe -m pytest -q
 $uiTests = Get-ChildItem tests/ui -Filter '*.mjs' | ForEach-Object FullName

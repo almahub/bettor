@@ -195,7 +195,8 @@ test('dashboard controller renders every decision and view from backend contract
   assert.match(markup(),/Non disponibile via API/);
   assert.match(markup(),/https:\/\/platform.openai.com\/settings\/organization\/billing\/overview/);
   assert.match(markup(),/Attività per modello/);
-  assert.match(markup(),/157/);
+  assert.equal(contracts['/api-control'].summary.requests,2);
+  assert.match(markup(),/Richieste<\/div><div class="metric-value">2<\/div>/);
   const expectedCost=new Intl.NumberFormat('it-IT',{style:'currency',currency:'EUR',minimumFractionDigits:2,maximumFractionDigits:6}).format(Number(contracts['/api-control'].summary.cost_eur));
   assert.ok(markup().includes(expectedCost));
   assert.match(markup(),/Attività per chiamata/);

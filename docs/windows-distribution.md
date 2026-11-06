@@ -1,6 +1,6 @@
 # Bettor per Windows
 
-Versione corrente **0.2.7**: finestra desktop pywebview/WebView2, servizio locale separato e primo avvio guidato. Vedi [primo avvio](desktop-first-run.md) e [backup/rilascio](backup-and-releases.md).
+Versione corrente **0.2.8**: finestra desktop pywebview/WebView2, servizio locale separato e primo avvio guidato. Vedi [primo avvio](desktop-first-run.md) e [backup/rilascio](backup-and-releases.md).
 
 ## Percorsi
 
