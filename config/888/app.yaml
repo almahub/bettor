@@ -1,0 +1,28 @@
+database_url: sqlite:///data/888-real.db
+timing_comparison_enabled: false
+timing_comparison_competitions:
+- 888it:competition:1000095001
+batch_ranking:
+  probability_weight: 15
+  price_coherence_weight: 10
+  edge_weight: 20
+  expected_value_weight: 20
+  data_quality_weight: 15
+  completeness_weight: 10
+  freshness_weight: 5
+  source_reliability_weight: 5
+  edge_reference: 0.15
+  expected_value_reference: 0.2
+  validator_penalty: 20
+  lineup_penalty: 8
+  partial_stats_penalty: 8
+  small_sample_penalty: 10
+  max_candidates: 6
+  max_concurrency: 2
+active_competitions:
+- 888it:competition:1000095001
+- 888it:competition:1000095002
+result_provider_priority:
+- football_data_org
+- free_football
+- manual

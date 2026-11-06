@@ -1,0 +1,12 @@
+providers:
+  fixture: {primary: none, fallback: null}
+  football_stats: {primary: none, fallback: null}
+  odds: {primary: none, fallback: null}
+  news: {primary: none, fallback: null, official_first: true}
+  lineups: {primary: none, fallback: null}
+http_feed:
+  base_url_env: BETTER_FEED_BASE_URL
+  api_key_env: BETTER_FEED_API_KEY
+  provider_id: configured-football-feed
+# Set primary to http_feed for your canonical Better feed or football_data_org
+# for actual fixture mapping. Demo sources are selected only by explicit --demo.

@@ -1,0 +1,10 @@
+kelly_fraction: 0.25
+max_single_bet_fraction: 0.01
+max_match_exposure: 0.015
+max_team_exposure: 0.03
+max_competition_exposure: 0.10
+max_portfolio_exposure: 0.20
+max_daily_exposure: 0.05
+max_weekly_exposure: 0.15
+max_drawdown: 0.20
+

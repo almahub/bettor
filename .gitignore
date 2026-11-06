@@ -1,0 +1,25 @@
+.venv/
+.python/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.env
+*.db
+*.db-*
+*.sqlite*
+dist/
+*.egg-info/
+data/cache/
+data/raw/
+data/processed/
+data/journal/
+data/logs/
+
+# Private operational state is never a release input
+data/
+run-temp*/
+build/
+.env.*
+!.env.example

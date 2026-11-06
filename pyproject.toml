@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "better-football"
+version = "0.2.0"
+description = "Evidence-first football decision support with deterministic gates"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.10,<3", "fastapi>=0.115,<1", "httpx>=0.28,<1", "sqlalchemy>=2.0,<3", "alembic>=1.14,<2", "PyYAML>=6,<7", "uvicorn>=0.34,<1", "tzdata>=2026.1; sys_platform == 'win32'"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1"]
+postgres = ["psycopg[binary]>=3.2,<4"]
+
+[project.scripts]
+better = "better.cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["better"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "--basetemp=.cache/pytest"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B"]

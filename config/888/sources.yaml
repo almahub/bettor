@@ -1,0 +1,166 @@
+providers:
+  fixture:
+    primary: sport_888
+    fallback: null
+  odds:
+    primary: sport_888
+    fallback: null
+  football_stats:
+    primary: free_football
+    fallback: null
+  news:
+    primary: none
+    fallback: null
+  lineups:
+    primary: free_football
+    fallback: null
+sport_888:
+  catalog_hours: 168
+  catalog_ttl_seconds: 120
+  odds_ttl_seconds: 15
+  timeout_seconds: 8
+  allowed_competition_patterns:
+  - ^Serie A$
+  - ^Serie B$
+  allowed_competitions:
+    1000095001: ^Serie A$
+    1000095002: ^Serie B$
+api_football:
+  competitions:
+    888it:competition:1000095001:
+      league: 135
+      season: 2026
+    888it:competition:1000095002:
+      league: 136
+      season: 2026
+  teams:
+    888it:team:1000000185: 777
+    888it:team:1000000146: 768
+    888it:team:1000000331: 1580
+    888it:team:1000084742: 501
+    888it:team:1000066478: 514
+    888it:team:1000000091: 508
+  sample_matches: 10
+  daily_request_budget: 90
+  archive_enabled: true
+  analysis_archive_only: true
+  archive_seasons:
+  - 2026
+  - 2025
+  - 2024
+  archive_leagues:
+  - 135
+  - 136
+  archive_batch_requests: 4
+  archive_daily_requests: 100
+  network_enabled: true
+  results_enabled: false
+sportradar:
+  access_level: trial
+  language: en
+  sample_matches: 10
+  monthly_call_budget: 900
+  identity_minimum_name_score: 0.84
+  identity_automatic_score: 0.92
+  identity_minimum_margin: 0.08
+  identity_maximum_kickoff_delta_minutes: 120
+  identity_verified_kickoff_delta_minutes: 20
+  competitions:
+    888it:competition:2000051466: sr:competition:696
+  teams:
+    888it:team:1004972991: sr:competitor:509432
+    888it:team:1000581308: sr:competitor:77889
+    888it:team:1004197188: sr:competitor:308650
+    888it:team:1000450354: sr:competitor:26243
+    888it:team:1000065794: sr:competitor:1889
+    888it:team:1004312940: sr:competitor:377716
+external_research:
+  enabled: true
+  research_primary_source: false
+  provider: openai
+  max_requests_per_match: 1
+  max_search_calls_per_match: 3
+  max_tokens_per_match: 8000
+  max_cost_per_match: '0.25'
+  fields:
+    injuries:
+      enabled: true
+      ttl_seconds: 1800
+    suspensions:
+      enabled: true
+      ttl_seconds: 1800
+    unavailable_players:
+      enabled: true
+      ttl_seconds: 1800
+    doubtful_players:
+      enabled: true
+      ttl_seconds: 1800
+    returned_players:
+      enabled: true
+      ttl_seconds: 1800
+    probable_lineups:
+      enabled: true
+      ttl_seconds: 600
+    confirmed_lineups:
+      enabled: true
+      ttl_seconds: 300
+    squad_callups:
+      enabled: true
+      ttl_seconds: 1800
+    manager_press_conferences:
+      enabled: true
+      ttl_seconds: 1800
+    turnover:
+      enabled: true
+      ttl_seconds: 1800
+    manager_changes:
+      enabled: true
+      ttl_seconds: 3600
+    fixture_congestion:
+      enabled: true
+      ttl_seconds: 3600
+    relevant_match_news:
+      enabled: true
+      ttl_seconds: 900
+    travel_context:
+      enabled: true
+      ttl_seconds: 1800
+    weather:
+      enabled: true
+      ttl_seconds: 1800
+    pitch_playing_conditions:
+      enabled: true
+      ttl_seconds: 1800
+    contextual_information:
+      enabled: true
+      ttl_seconds: 1800
+football_data_research:
+  enabled: true
+  supported_competitions:
+  - Serie A
+  - Serie B
+  max_search_calls: 3
+  max_tokens: 8000
+  max_cost_per_match: '0.25'
+  season_ttl_seconds: 21600
+  recent_form_ttl_seconds: 1800
+free_football:
+  enabled: true
+  competitions:
+    888it:competition:1000095001: I1
+    888it:competition:1000095002: I2
+  seasons:
+  - 2026
+  - 2025
+  - 2024
+  openfootball_divisions:
+  - I1
+  refresh_seconds: 21600
+  csv_files: []
+  team_aliases:
+    internazionale milano: inter
+    internazionale: inter
+    genoa cfc: genoa
+    as roma: roma
+football_data_org_competitions:
+  888it:competition:1000095001: football-data:competition:2019

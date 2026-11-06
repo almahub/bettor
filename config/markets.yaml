@@ -1,0 +1,4 @@
+# V1 only prices full, mutually exclusive markets without refunds.
+# Other enums/models exist; DNB/AH/team totals need settlement-aware validated datasets.
+supported_markets: [1X2, OVER_UNDER_2_5, BTTS]
+

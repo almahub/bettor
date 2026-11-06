@@ -1,0 +1,42 @@
+name: Windows setup
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build environment
+        shell: pwsh
+        run: |
+          python -m venv .cache/packaging-venv
+          .cache/packaging-venv/Scripts/python.exe -m pip install .[dev] pyinstaller
+      - name: Tests
+        shell: pwsh
+        run: |
+          .cache/packaging-venv/Scripts/python.exe -m pytest -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem tests/ui/test_*.mjs | ForEach-Object { node --test $_.FullName; if ($LASTEXITCODE -ne 0) { throw "UI tests failed" } }
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $Compiler = Get-ChildItem "${env:ProgramFiles(x86)}/Inno Setup */ISCC.exe" | Select-Object -First 1
+          if (!$Compiler) { throw "Inno Setup compiler missing" }
+          ./scripts/build-windows.ps1 -Iscc $Compiler.FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Better-Windows-Setup
+          path: dist/installer/*
+      - name: Draft release only
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release create ${{ github.ref_name }} dist/installer/* --draft --generate-notes --title "Better ${{ github.ref_name }}"

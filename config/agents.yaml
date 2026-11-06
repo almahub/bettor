@@ -1,0 +1,11 @@
+agents_enabled:
+  tactical_analyst: true
+  matched_betting: false
+critical_agents:
+  - football_data_analyst
+  - football_odds_analyst
+  - predictive_model
+  - model_validator
+  - risk_manager
+  - professional_bettor
+
