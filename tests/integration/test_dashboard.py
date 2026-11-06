@@ -1,3 +1,4 @@
+import json
 import mimetypes
 
 import pytest
@@ -86,17 +87,57 @@ def test_same_origin_dashboard_assets_and_safe_workspace(monkeypatch):
         assert client.get("/assets/../config/sources.yaml").status_code == 404
 
 
-def test_api_control_reports_sanitized_local_exports():
+def test_api_control_reports_sanitized_local_exports(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_USAGE_LIVE_ENABLED", "false")
+    monkeypatch.setenv("OPENAI_COST_USD_EUR_RATE", "0.90")
+    exports = tmp_path / "data/api-control"
+    exports.mkdir(parents=True)
+    usage = {
+        "data": [
+            {
+                "start_time": 1790812800,
+                "results": [
+                    {
+                        "model": "test-model",
+                        "num_model_requests": 2,
+                        "input_tokens": 100,
+                        "output_tokens": 10,
+                        "api_key_id": "private-test-id",
+                        "user_id": "private-test-user",
+                        "organization_id": "private-test-org",
+                    }
+                ],
+            }
+        ]
+    }
+    costs = {
+        "data": [{"start_time": 1790812800, "results": [{"amount": {"value": "1.25", "currency": "usd"}}]}]
+    }
+    (exports / "completions-usage.json").write_text(json.dumps(usage), encoding="utf-8")
+    (exports / "costs.json").write_text(json.dumps(costs), encoding="utf-8")
     with TestClient(create_app(runtime())) as client:
         report = client.get("/api-control").json()
         assert report["source"] == "LOCAL_EXPORT"
-        assert report["summary"]["requests"] == 157
-        assert report["summary"]["total_tokens"] == 1_936_111
-        assert report["summary"]["costs"]["USD"].startswith("0.97724839")
+        assert report["summary"]["requests"] == 2
+        assert report["summary"]["total_tokens"] == 110
+        assert report["summary"]["costs"]["USD"] == "1.25"
         serialized = str(report)
         assert "api_key_id" not in serialized
         assert "user_id" not in serialized
         assert "organization_id" not in serialized
+        assert "private-test-" not in serialized
+
+
+def test_api_control_without_exports_does_not_invent_usage(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_USAGE_LIVE_ENABLED", "false")
+    monkeypatch.setenv("OPENAI_COST_USD_EUR_RATE", "0.90")
+    with TestClient(create_app(runtime())) as client:
+        report = client.get("/api-control").json()
+        assert report["source"] == "LOCAL_EXPORT"
+        assert report["summary"]["requests"] == 0
+        assert report["summary"]["total_tokens"] == 0
 
 
 def test_data_pipeline_control_plane_is_available():
