@@ -1,7 +1,7 @@
 # Better per Windows
 
 ## Stato effettivo
-Launcher, bundle PyInstaller, setup Inno Setup e workflow GitHub predisposti. Bundle autonomo compilato e avviato senza Python nel PATH, health e doppio avvio verificati; setup Inno Setup compilato (circa 19,6 MB). Installazione e reinstallazione di aggiornamento collaudate in .cache/installed-better, database e .env di prova invariati e backup creati. Nessuna pubblicazione effettuata. Repository locale inizializzata con soli sorgenti revisionati; pubblicazione in preparazione.
+Launcher, bundle PyInstaller, setup Inno Setup e workflow GitHub predisposti. Bundle autonomo compilato e avviato senza Python nel PATH, health e doppio avvio verificati; setup Inno Setup compilato (circa 19,6 MB). Installazione e reinstallazione di aggiornamento collaudate in .cache/installed-better, database e .env di prova invariati e backup creati. Sorgenti pubblicati nella repository almahub/bettor. Prima release v0.2.0 creata in bozza con setup e checksum: https://github.com/almahub/bettor/releases. Da collaudare su un secondo PC prima della pubblicazione.
 
 ## Percorsi
 Programma: %LOCALAPPDATA%/Programs/Better.
