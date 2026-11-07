@@ -294,12 +294,45 @@ class AutomaticMultiples:
     async def collect_verified(self):
         if not self.policy()['enabled'] or self.execution_status().get('paused'):
             return {'enabled':False,'created':[],'diagnostics':['Automazione disattivata o sospesa.']}
+        from better.services.scheduled_multiples import ScheduledMultiples
+        schedule = ScheduledMultiples(self)
+        if schedule.pending():
+            return await schedule.collect_due()
         preview = self.preview()
         policy = self.policy()
         if hasattr(self.runtime,'providers') and (not policy.get('preview_id') or not policy.get('approved_budget_eur') or Decimal(policy['budget_eur'])>Decimal(policy['approved_budget_eur']) or (policy.get('approval_mode')!='FUTURE_PROPOSALS' and policy.get('preview_id')!=preview['preview_id'])):
             return {'enabled':True,'created':[],'diagnostics':['APPROVAL_REQUIRED: approva l’anteprima aggiornata.']}
         if not preview['tickets']:
             return self.collect()
+        if hasattr(self.runtime, 'analyze'):
+            from better.services.candidate_refresh import CandidateRefresh
+            try:
+                refresh = await CandidateRefresh(self).run(preview)
+            except Exception:
+                message = 'ANALYSIS_REFRESH_FAILED: aggiornamento non completato; nessuna giocata confermata.'
+                self.record_execution(message, technical=True)
+                return {'enabled': self.policy()['enabled'] and not self.execution_status()['paused'], 'created': [],
+                        'diagnostics': [message], 'error': message}
+            if not any(refresh.values()):
+                refresh = None
+            if refresh is not None and refresh['failed']:
+                message = 'ANALYSIS_REFRESH_FAILED: aggiornamento non riuscito; nessuna giocata confermata.'
+            elif refresh is not None and refresh['refreshed']:
+                message = ('ANALYSIS_REFRESHED: candidate aggiornate e riclassificate; '
+                           'nuova verifica nel prossimo ciclo. Le approvazioni puntuali vanno riconfermate.')
+            elif refresh is not None:
+                message = 'ANALYSIS_REFRESH_WAIT: aggiornamento in corso o tentativi sospesi; nessun addebito.'
+            if refresh is not None:
+                # Waiting is not a successful attempt: preserve the technical-error circuit breaker.
+                if refresh['failed'] or refresh['refreshed']:
+                    self.record_execution(message, technical=bool(refresh['failed']))
+                return {'enabled': self.policy()['enabled'] and not self.execution_status()['paused'], 'created': [],
+                        'diagnostics': [message], 'analysis_refresh': refresh,
+                        **({'error': message} if refresh['failed'] else {})}
+        # Prepare now without moving money. Verification and confirmation belong
+        # to the first kickoff minus fifteen minutes of each individual ticket.
+        if hasattr(self.runtime, 'providers'):
+            return schedule.prepare(preview)
         try:
             await self.final_check(preview)
         except PlacementBlocked as error:
@@ -329,7 +362,7 @@ class AutomaticMultiples:
                 self.update_policy(MultipleAutoSwitch(request_id=uuid5(NAMESPACE_URL,'completed:'+preview['preview_id']),enabled=False))
         return result
 
-    async def final_check(self, preview):
+    async def final_check(self, preview, *, scheduled=False):
         if not hasattr(self.runtime,'providers'):
             return  # Pure service tests supply no network runtime.
         now = self.clock()
@@ -372,7 +405,7 @@ class AutomaticMultiples:
             if any(moment(r['as_of'])>run.as_of and moment(r['created_at'])<=end for r in self.repository.all_records('analysis_runs',match_id=match_id)):
                 raise PlacementBlocked('ANALYSIS_CHANGED: analisi aggiornata durante il controllo.')
         self._verified_until = min(deadlines) if deadlines else end
-        if self.preview()['preview_id'] != preview['preview_id']:
+        if not scheduled and self.preview()['preview_id'] != preview['preview_id']:
             raise PlacementBlocked('PREVIEW_CHANGED: la composizione è cambiata durante i controlli.')
 
     def report(self):
@@ -386,15 +419,24 @@ class AutomaticMultiples:
         remaining = max(Decimal('0'), Decimal(policy['budget_eur'])-spent)
         readiness = execution.get('message') or (errors[0]['reason'] if errors else ('Budget del turno gia assegnato.' if remaining<=0 else 'In attesa di almeno tre partite utilizzabili entro 24 ore.' if len(plan['selected'])<3 else 'Pronta per il prossimo ciclo del collector.'))
         preview = self.preview()
+        from better.services.scheduled_multiples import ScheduledMultiples
+        scheduled = ScheduledMultiples(self).report()
         approval_required = bool(policy['enabled'] and (not policy.get('preview_id') or not policy.get('approved_budget_eur') or Decimal(policy['budget_eur'])>Decimal(policy['approved_budget_eur']) or (policy.get('approval_mode')!='FUTURE_PROPOSALS' and policy.get('preview_id')!=preview['preview_id'])))
+        if policy['enabled'] and scheduled and policy.get('preview_id') and policy.get('approved_budget_eur') and Decimal(policy['budget_eur']) <= Decimal(policy['approved_budget_eur']):
+            approval_required = any(r['approval_required'] for r in scheduled)
+            readiness = 'Multiple preparate: conferma automatica a T\u221215 dal primo kickoff di ciascuna, se i controlli passano.'
         if approval_required:
             readiness = 'APPROVAL_REQUIRED: rivedi e approva l’anteprima aggiornata.'
+        refresh_rows = self.repository.all_records('annotations', entity_id='candidate-refresh:v1')
+        refresh_status = sorted(refresh_rows, key=lambda r: (r['at'], r['kind'] != 'CLAIM'), reverse=True)[:6]
         return {'approval_required': approval_required, 'enabled': policy['enabled'] and not execution.get('paused'), 'paused': execution.get('paused',False), 'execution_status': execution, 'preview': preview, 'budget_eur': policy['budget_eur'], 'control': policy, 'proposal': plan, 'approved_plan': None,
+                'analysis_refresh_status': refresh_status,
+                'scheduled_confirmations': scheduled,
                 'allocated_eur': f'{spent:.2f}', 'unallocated_eur': f'{max(Decimal("0"), Decimal(policy['budget_eur'])-spent):.2f}',
                 'preparations': rows, 'groups': [], 'errors': errors, 'readiness_reason': readiness,
                 'note': 'Budget totale del turno settimanale Europe/Rome. Preparazione manuale senza addebito; automazione separata delle giocate registrate con addebito Banca. Nessuna puntata al bookmaker.'}
 
-    def update(self, request, *, auto_place=False):
+    def update(self, request, *, auto_place=False, auto_schedule=None):
         if not request.enabled:
             return self.report()
         with self._transaction() as conn:
@@ -458,11 +500,16 @@ class AutomaticMultiples:
                         desk.place_slip(slip.id, BetSlipAction(request_id=uuid5(identifier, 'automatic-test-place')))
                     metadata = {'origin': MODE, 'turn': plan['turn'], 'plan_id': plan['plan_id'], 'amount_eur': str(amount),
                                 'status': 'OPEN' if auto_place else 'READY', 'automatic_test_placement': auto_place, 'selections': rows, 'reason': (('Giocata confermata automaticamente; Banca addebitata, nessun bookmaker contattato. ' if auto_place else 'Pronta come schedina, non piazzata; conferma manuale e quote da verificare. ') + 'INDICATIVE non diventa BET. Mercati diversi della stessa partita restano correlati.')}
+                    if auto_schedule is not None:
+                        metadata['reason'] = 'Preparata automaticamente senza addebito; verifica e conferma a T-15 dal primo kickoff della multipla, con consenso valido. INDICATIVE resta tale.'
                     self._write(repo, conn, 'auto-multiple-slip:'+str(identifier), metadata, entity='auto-multiple-slip:'+str(identifier))
                     ids.append(str(identifier))
                 self._write(repo, conn, 'candidate-prepared:'+plan['plan_id'], {'kind': 'PREPARED', 'plan_id': plan['plan_id'],
                     'request_id': str(request.request_id), 'turn': plan['turn'], 'slips': ids, 'allocated_eur': plan['budget_eur'],
                     'selected': plan['selected'], 'automatic_test_placement': auto_place, 'at': self.clock().isoformat()})
+                if auto_schedule is not None:
+                    from better.services.scheduled_multiples import ScheduledMultiples
+                    ScheduledMultiples(self).save(repo, conn, ids, auto_schedule)
         return self.report()
 
     def collect(self):

@@ -6,6 +6,8 @@ test('preview shows exact stakes, selections and explicit opt-in for future prop
  const control={preview:{total_eur:'50',bank_available_eur:'100',bank_after_eur:'50',bank_sufficient:true,tickets:[{amount_eur:'50',combined_odds:'8',selections:[{match:'<script>unsafe</script>',kickoff:'2026-11-06T19:45:00Z',market:'BTTS',selection:'YES',odds:2,status:'INDICATIVE',analysis_id:'a1'}]}]}};
  const markup=placementPreview(control,false).value;
  assert.match(markup,/Anteprima delle giocate/);
+ assert.match(markup,/Approvazione Auto/);
+ assert.match(markup,/T-15 dal primo kickoff/);
  assert.match(markup,/Conferma soltanto queste multiple/);
  assert.match(markup,/Autorizzo anche composizioni future/);
  assert.match(markup,/bank|Banca/);

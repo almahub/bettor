@@ -12,6 +12,7 @@ test('dashboard controller renders every decision and view from backend contract
   const contracts=JSON.parse(generated.stdout);
   contracts['/salabet/candidates/indicative']={id:'indicative-candidate'};
   contracts['/matches'].push({...contracts['/matches'][0],match_id:'filter-test',competition:'FILTER_TEST'});
+  contracts['/data-pipeline'].automatic_multiples.analysis_refresh_status=[{kind:'DONE',match_id:'refresh-test',at:'2026-11-03T12:00:00Z',reason:'ANALYSIS_REFRESHED',analysis_id:'refresh-analysis'}];
   contracts['/data-pipeline'].settlement.pending=[{match_id:'pending-result',match:'Home – Away'}];
   contracts['/data-pipeline'].collector={status:'OK',healthy:true,active:true,error_count:0,errors:[],heartbeat_age_seconds:10};
   const elements=new Map(); const listeners={}; const requests=[];
@@ -41,9 +42,10 @@ test('dashboard controller renders every decision and view from backend contract
   await click({action:'refresh'});
   assert.match(markup(),/Quadro operativo/);
   assert.match(markup(),/Automazione Piazza Scommessa/);
-  assert.match(markup(),/registra le giocate confermate/);
+  assert.match(markup(),/Prepara le multiple/);
   assert.match(markup(),/data-action="placement-automation-toggle"/);
   assert.match(markup(),/Stato operativo/);
+  assert.match(markup(),/aria-label="Apri SalaBet"/);
   assert.match(markup(),/Schedine da confermare/);
   assert.ok(markup().indexOf('id="pending-bet-reminder"')<markup().indexOf('aria-labelledby="operational-status"'),'Reminder must appear above operational cards');
   for(const label of ['Pipeline','Collector','Model Validator'])assert.match(markup(),new RegExp(label));
@@ -66,6 +68,8 @@ test('dashboard controller renders every decision and view from backend contract
   assert.doesNotMatch(markup(),/>ATTIVO</);
   await click({page:'pipeline'});
   assert.match(markup(),/MISSING_DATA/);
+  assert.match(markup(),/Aggiornamento candidate scadute/);
+  assert.match(markup(),/ANALYSIS_REFRESHED/);
   assert.match(markup(),/local_archive/);
   assert.ok(!markup().includes('<script>secret</script>'));
   contracts['/data-pipeline'].collector={status:'OK',healthy:true,active:true,error_count:0,errors:[],heartbeat_age_seconds:10};
@@ -379,8 +383,13 @@ test('dashboard controller renders every decision and view from backend contract
   assert.match(markup(),/API-Football<\/span><strong class="">LIMITATA/);
   contracts['/workspace'].is_demo=false;
   await click({page:'dashboard'});
-  assert.doesNotMatch(markup(),/data-page="portfolio"|data-action="bank-|>Bankroll<|P\/L del periodo/);
-  assert.equal(requests.some(([path])=>path==='/bank'),false,'Bettor must not load the SalaBet bank');
+  assert.doesNotMatch(markup(),/data-page="portfolio"|data-action="bank-|P\/L del periodo/);
+  assert.equal(requests.some(([path,options])=>path==='/bank' && (!options.method || options.method==='GET')),true,'Dashboard reads the existing bank summary');
+  assert.equal(requests.some(([path,options])=>path.startsWith('/bank') && options.method && options.method!=='GET'),false,'Dashboard never writes to the bank');
+  assert.match(markup(),/>Bankroll</);
+  assert.match(markup(),/href="\/salabet#bank"/);
+  assert.match(markup(),/Azioni rapide/);
+  assert.match(markup(),/Candidate SalaBet/);
   await click({page:'portfolio'});
   assert.equal(location.href,'/salabet#bank','Legacy bank navigation redirects to SalaBet');
   await click({page:'models'});

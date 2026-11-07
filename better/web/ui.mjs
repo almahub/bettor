@@ -121,6 +121,16 @@ export function diagnosticCauses(run) {
   return causes;
 }
 const paths = {
+  chart:html`<path d="M5 20v-6m7 6V9m7 11V4"/>`,
+  ticket:html`<path d="M4 5h16a1 1 0 0 1 1 1v3a3 3 0 0 0 0 6v3a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-3a3 3 0 0 0 0-6V6a1 1 0 0 1 1-1Z"/><path d="M15 8v2m0 4v2"/>`,
+  plug:html`<path d="M8 3v5m8-5v5M6 8h12v4a6 6 0 0 1-12 0Zm6 10v4"/>`,
+  chip:html`<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4M10 10h4v4h-4Z"/>`,
+  settings:html`<path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 2-1 2 3h3l1-3 3-1 2-3-2-2 1-3-3-2-2 1-2-3Z"/><circle cx="11" cy="11" r="3"/>`,
+  database:html`<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0"/>`,
+  sliders:html`<path d="M3 6h10m4 0h4M3 12h3m4 0h11M3 18h11m4 0h3"/><circle cx="15" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="18" r="2"/>`,
+  document:html`<path d="M5 3h10l4 4v14H5Zm9 0v5h5M8 12h8m-8 4h6"/>`,
+  validation:html`<path d="M3 3v17h18M6 15l4-5 4 2 6-7m-5 12 2 2 4-5"/>`,
+  archive:html`<path d="M3 3h18v5H3Zm2 5v13h14V8m-10 5h6"/>`,
   grid:html`<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>`,
   book:html`<path d="M4 4h6a3 3 0 0 1 2 1 3 3 0 0 1 2-1h6v16h-6a3 3 0 0 0-2 1 3 3 0 0 0-2-1H4zM12 5v16"/>`,
   layers:html`<path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/>`,

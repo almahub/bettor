@@ -242,7 +242,7 @@ def test_six_leg_combined_odds_keep_precision_when_recorded_in_bank(desk):
             request_id=uuid4(),
             bookmaker="888sport.it",
             stake="10.00",
-            odds_at_placement={row.id: price for row, price in zip(rows, odds)},
+            odds_at_placement={row.id: price for row, price in zip(rows, odds, strict=True)},
         ),
     )
     assert len(str(slip.combined_odds).split(".")[1]) > 6

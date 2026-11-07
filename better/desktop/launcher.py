@@ -180,6 +180,7 @@ def main():
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--no-browser", action="store_true", help="Servizio in background senza finestra")
     parser.add_argument("--backup-only", action="store_true")
+    parser.add_argument("--updates", action="store_true", help="Apri gli aggiornamenti nell’applicazione")
     parser.add_argument(
         "--setup", action="store_true", help="Riapri la configurazione iniziale a servizio fermo"
     )
@@ -236,7 +237,9 @@ def main():
 
             ensure_backend(home, args.port, identity)
             suffix = "#system/settings" if mode in {"new", "restore"} else ""
-            show(f"http://127.0.0.1:{args.port}/" + suffix)
+            if args.updates and not suffix:
+                suffix = "#system/updates"
+            show(f"http://127.0.0.1:{args.port}/" + suffix, home=home, port=args.port)
     except Exception as exc:
         # Do not include exception text that could contain configuration secrets.
         import traceback

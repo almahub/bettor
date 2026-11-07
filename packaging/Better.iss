@@ -18,6 +18,7 @@ OutputBaseFilename=Better-Setup-{#AppVersion}-x64
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\better\web\brand\bettor.ico
 CloseApplications=no
 RestartApplications=no
 UninstallDisplayIcon={app}\Better.exe
@@ -32,7 +33,7 @@ Name: "{group}\Bettor"; Filename: "{app}\Better.exe"; Check: not WizardNoIcons
 Name: "{group}\Configurazione e dati Bettor"; Filename: "{localappdata}\Better"; Check: not WizardNoIcons
 Name: "{group}\Configurazione iniziale Bettor"; Filename: "{app}\Better.exe"; Parameters: "--setup"; Check: not WizardNoIcons
 Name: "{group}\Arresta servizio Bettor"; Filename: "{app}\Better.exe"; Parameters: "--stop"; Check: not WizardNoIcons
-Name: "{group}\Controlla aggiornamenti Bettor"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NoExit -File ""{app}\download-update.ps1"""; Check: not WizardNoIcons
+Name: "{group}\Controlla aggiornamenti Bettor"; Filename: "{app}\Better.exe"; Parameters: "--updates"; Check: not WizardNoIcons
 [Run]
 Filename: "{app}\Better.exe"; Description: "Avvia Bettor"; Flags: nowait postinstall skipifsilent
 [InstallDelete]

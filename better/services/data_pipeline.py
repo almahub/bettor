@@ -57,7 +57,7 @@ class DataPipelineService:
         self.raw_retention_days = self._positive_int("BETTER_RAW_RETENTION_DAYS", 30)
         self.cache_retention_days = self._positive_int("BETTER_CACHE_RETENTION_DAYS", 7)
         self.auto_collect = os.environ.get("BETTER_PIPELINE_AUTO_COLLECT", "true").lower() == "true"
-        self.poll_seconds = self._positive_int("BETTER_PIPELINE_POLL_SECONDS", 300)
+        self.poll_seconds = self._positive_int("BETTER_PIPELINE_POLL_SECONDS", 1800)
 
     @staticmethod
     def _positive_int(name: str, default: int) -> int:
@@ -396,7 +396,7 @@ class DataPipelineCollector:
         now = self.clock()
         policy = DataPipelineService(self.runtime.repository, settings=self.runtime.settings)
         age = (now - self.heartbeat_at).total_seconds() if self.heartbeat_at else None
-        recent = age is not None and 0 <= age <= policy.poll_seconds * 2
+        recent = age is not None and 0 <= age <= min(600, policy.poll_seconds * 2)
         from pathlib import Path
         restore_paused = Path("restore-pending.json").exists()
         active = bool(recent and (self.loop_active or self.running)) and not restore_paused
@@ -459,7 +459,20 @@ class DataPipelineCollector:
         async with self._lock:
             now = self.clock()
             from better.domain.models import Match
+            from better.services.automatic_multiples import AutomaticMultiples
+            from better.services.scheduled_multiples import ScheduledMultiples
+            from better.services.timing_comparison import moment
             from better.services.validation_cohort import ValidationCohortService
+
+            # Due confirmations precede archive refreshes and new analyses: a
+            # slow research request must not consume the final-check window.
+            multiples_result = None
+            multiples = AutomaticMultiples(self.runtime, clock=self.clock)
+            if any(moment(r['confirm_at']) <= now for r in ScheduledMultiples(multiples).pending()):
+                try:
+                    multiples_result = await multiples.collect_verified()
+                except Exception as error:
+                    multiples_result = {'created': [], 'error': failure_detail(error, stage='AUTOMATIC_MULTIPLES')}
 
             cohort = ValidationCohortService(self.runtime, clock=self.clock)
             try:
@@ -508,11 +521,11 @@ class DataPipelineCollector:
                         "away_team": candidate.away_team, "kickoff": candidate.kickoff.isoformat(),
                         "home_team_id": candidate.team_ids[0], "away_team_id": candidate.team_ids[1]})
             timing_result = await TimingComparisonService(self.runtime, clock=self.clock).collect_due(timing_targets.values())
-            from better.services.automatic_multiples import AutomaticMultiples
-            try:
-                multiples_result = await AutomaticMultiples(self.runtime, clock=self.clock).collect_verified()
-            except Exception as error:
-                multiples_result = {"created": [], "error": failure_detail(error, stage="AUTOMATIC_MULTIPLES")}
+            if multiples_result is None:
+                try:
+                    multiples_result = await multiples.collect_verified()
+                except Exception as error:
+                    multiples_result = {"created": [], "error": failure_detail(error, stage="AUTOMATIC_MULTIPLES")}
             captured, skipped, failed = [], [], []
             for selection in targets.values():
                 match_id = selection["match"]["match_id"]
@@ -608,6 +621,44 @@ class DataPipelineCollector:
                     except Exception:
                         # Failure is recorded by collect_due; keep the next cycle alive.
                         pass
-                await asyncio.sleep(settings.poll_seconds)
+                # A local timer is cheap: wake early for known T24/T15 deadlines
+                # without running another provider collection every minute.
+                regular_at = self.clock() + timedelta(seconds=settings.poll_seconds)
+                while self.clock() < regular_at:
+                    delay = self.next_cycle_delay(regular_at)
+                    if delay <= 0:
+                        break
+                    await asyncio.sleep(min(60, delay))
+                    self.heartbeat_at = self.clock()
         finally:
             self.loop_active = False
+
+    def next_cycle_delay(self, regular_at):
+        """Read only local schedules; never contact a provider from the timer."""
+        from better.services.automatic_multiples import AutomaticMultiples
+        from better.services.scheduled_multiples import ScheduledMultiples
+        from better.services.timing_comparison import TimingComparisonService, moment
+        now = self.clock()
+        deadlines = [regular_at]
+        owner = AutomaticMultiples(self.runtime, clock=self.clock)
+        if owner.policy()['enabled'] and not owner.execution_status().get('paused'):
+            for row in ScheduledMultiples(owner).pending():
+                due = moment(row['confirm_at'])
+                if due > now:
+                    deadlines.append(due)
+                elif now < due + timedelta(minutes=1):
+                    # At the trigger itself, run immediately; repeated failed
+                    # attempts are left to the next normal cycle.
+                    if self.started_at is None or self.started_at < due:
+                        deadlines.append(now)
+        timing = TimingComparisonService(self.runtime, clock=self.clock)
+        if timing.control.policy()['enabled']:
+            for row in self.runtime.repository.all_records('matches'):
+                if row.get('competition') not in self.runtime.settings.timing_comparison_competitions:
+                    continue
+                due = moment(row['kickoff']) - timedelta(hours=24)
+                if due > now:
+                    deadlines.append(due)
+                elif now < due + timedelta(minutes=10) and (self.started_at is None or self.started_at < due):
+                    deadlines.append(now)
+        return max(0, (min(deadlines) - now).total_seconds())

@@ -8,7 +8,7 @@ test('Bettor is the visible product name while technical compatibility is preser
  assert.match(read('better/desktop/onboarding.py'),/Bettor — Configurazione iniziale/);
  assert.match(read('better/web/index.html'),/<title>Bettor/);
  assert.match(read('packaging/Better.iss'),/AppName=Bettor/);
- assert.match(read('better/web/dashboard.mjs'),/>bettor</);
+ assert.match(read('better/web/dashboard.mjs'),/brand\/bettor-logo-dark\.svg/);
  assert.match(read('better/desktop/launcher.py'),/X-Better-Settings-Token/);
  assert.match(read('packaging/Better.iss'),/Programs\\Better/);
 });

@@ -52,11 +52,19 @@ def ensure_backend(home, port, identity):
     raise RuntimeError("Bettor non si è avviato. Controlla logs/desktop.log nella cartella dati.")
 
 
-def show(url):
+def show(url, home=None, port=None):
     import webview
+
+    from better.desktop.launcher import resource_root
 
     webview.settings["ALLOW_DOWNLOADS"] = True
     webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
-    webview.create_window("Bettor", url, width=1360, height=900, min_size=(960, 640))
+    from better.desktop.maintenance import DesktopActions
+
+    actions = DesktopActions(home, port) if home is not None and port is not None else None
+    window = webview.create_window("Bettor", url, width=1360, height=900, min_size=(960, 640), js_api=actions)
+    if actions is not None:
+        actions._window = window
     # Force the current renderer: never fall back to legacy Internet Explorer.
-    webview.start(gui="edgechromium", debug=False, private_mode=True)
+    webview.start(gui="edgechromium", debug=False, private_mode=True,
+                  icon=str(resource_root() / "better/web/brand/bettor.ico"))

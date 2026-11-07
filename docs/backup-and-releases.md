@@ -4,7 +4,7 @@
 
 «Rilascia aggiornamento» autorizza una release stabile su almahub/bettor, con setup e SHA256 verificati. Non è una semplice bozza. Il workflow associato al tag di una nuova versione esegue suite, build e pubblicazione; dopo la pubblicazione riuscita conserva al massimo tre release, comprese le vecchie bozze, senza cancellare tag o sorgenti. Nessuna release viene pubblicata soltanto perché una modifica è stata implementata.
 
-I programmi installati possono usare Controlla aggiornamenti nel menu Start oppure Sistema → Aggiornamenti → Controlla aggiornamenti. L’installazione resta volontaria: aprire la release, scaricare setup e checksum; il comando del menu Start scarica e verifica SHA256 automaticamente. Arrestare Bettor prima di installare. Nessun aggiornamento silenzioso mentre il database è aperto.
+I programmi installati possono usare Sistema → Aggiornamenti: versione in esecuzione, controllo GitHub, download verificato SHA256 e installazione con riavvio dopo conferma. Il componente esterno chiude la finestra e arresta il backend in sicurezza prima del setup. Il menu Start apre gli aggiornamenti nell’applicazione. Nelle versioni precedenti senza questo flusso occorre ancora scaricare il setup e arrestare il servizio manualmente. Vedi [manutenzione desktop](desktop-maintenance.md).
 
 ## Backup
 

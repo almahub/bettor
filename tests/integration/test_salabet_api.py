@@ -43,7 +43,7 @@ def test_bet_creates_one_authoritative_candidate_and_ui_exposes_manual_states():
         page = client.get("/salabet")
         script = client.get("/assets/salabet.mjs")
         assert page.status_code == script.status_code == 200
-        assert "SalaBet · Betting desk" in page.text
+        assert "SalaBet · Bettor" in page.text
         assert "CONFERMA PUNTATA" in script.text
         assert "Schedina creata e spostata in Scommesse aperte" in script.text
         assert "La partita è già iniziata. Il live betting non è supportato." in script.text

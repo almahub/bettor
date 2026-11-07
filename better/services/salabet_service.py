@@ -656,6 +656,12 @@ class SalaBetService:
         document["selections"] = selections
         automatic = self.repository.all_records("annotations", entity_id="auto-multiple-slip:" + str(slip.id))
         document["automatic_preparation"] = automatic[0] if automatic else None
+        scheduled = [r for r in self.repository.all_records("annotations", entity_id="automatic-multiples:v1")
+                     if r.get("slip_id") == str(slip.id) and r.get("kind") in {"SCHEDULED", "SCHEDULE_FINISHED"}]
+        document["confirmation_schedule"] = {
+            **next((r for r in scheduled if r['kind'] == 'SCHEDULED'), {}),
+            **next((r for r in scheduled if r['kind'] == 'SCHEDULE_FINISHED'), {}),
+        } or None
         document["checkpoint_review"] = None
         return document
 

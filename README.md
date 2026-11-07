@@ -2,9 +2,9 @@
 
 Applicazione Windows per analisi calcistiche, ricerca documentata, previsioni probabilistiche, validazione e gestione delle giocate in SalaBet.
 
-## Installazione Windows — 0.2.8
+## Installazione Windows — 0.2.9
 
-Scarica **Bettor-Setup-0.2.8-x64.exe** e il relativo `.sha256` da [GitHub Releases](https://github.com/almahub/bettor/releases/latest). Richiede Windows x64 e Microsoft Edge WebView2 Runtime. Python non è richiesto sul PC utente.
+Scarica **Bettor-Setup-0.2.9-x64.exe** e il relativo `.sha256` da [GitHub Releases](https://github.com/almahub/bettor/releases/latest). Richiede Windows x64 e Microsoft Edge WebView2 Runtime. Python non è richiesto sul PC utente.
 
 Il collegamento **Bettor** apre una finestra desktop senza console e barra degli indirizzi. Il primo avvio propone:
 
@@ -16,7 +16,7 @@ Le chiavi si inseriscono in **Sistema → Impostazioni**, con campi password e p
 
 Per compatibilità, programma e dati restano in `%LOCALAPPDATA%/Programs/Better` e `%LOCALAPPDATA%/Better`. Il modulo Python si chiama `better`; il prodotto si chiama **Bettor**. Il setup non include dati o credenziali personali.
 
-Chiudere la finestra lascia il servizio attivo. Per applicare configurazione o ripristino: chiudere la finestra, usare **Arresta servizio Bettor** dal menu Start e riaprire Bettor. L'arresto è bloccato durante analisi o checkpoint attivi.
+Chiudere la finestra lascia il servizio attivo. Sistema mostra la versione attuale e consente di scaricare e verificare l'aggiornamento, quindi installarlo con riavvio assistito. Per un ripristino programmato usare **Riavvia Bettor e applica ripristino**. L'arresto è bloccato durante analisi o checkpoint attivi.
 
 ## Funzioni
 
@@ -39,9 +39,10 @@ Chiudere la finestra lascia il servizio attivo. Per applicare configurazione o r
 - [Build Windows](docs/windows-distribution.md)
 - [Architettura](docs/architecture.md), [agenti](docs/agents.md), [matematica](docs/math.md)
 - [Automazione Serie A](docs/serie-a-automation.md), [Data Pipeline](docs/data-pipeline.md)
+- [Conferma automatica T-15](docs/scheduled-confirmation.md)
 - [SalaBet](docs/salabet.md), [sicurezza automazioni e diagnostica](docs/placement-safety-and-model-diagnostics.md)
 - [API Control](docs/api-control.md), [ricerca AI](docs/research-agents.md)
-- [Note 0.2.8](docs/releases/0.2.8.md)
+- [Note 0.2.9](docs/releases/0.2.9.md)
 
 ## Sviluppo
 

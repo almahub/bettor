@@ -32,3 +32,7 @@ restore-result.json
 docs/HANDOFF.md
 docs/audits/
 docs/reviews/
+
+# Private local status reports
+docs/current-state.md
+docs/implementation-status.md

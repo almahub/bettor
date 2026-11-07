@@ -88,7 +88,7 @@ campione.
 
 Una partita viene registrata per la raccolta quando viene selezionata e consultata
 nel Centro analisi oppure quando viene avviata un'analisi reale. Il collector gira
-ogni cinque minuti e interroga soltanto dati strutturati e quote; non avvia ricerche
+ogni trenta minuti, con risveglio anticipato ai checkpoint T24/T15 e interroga soltanto dati strutturati e quote; non avvia ricerche
 OpenAI in background. All'interno della stessa finestra temporale una partita viene
 archiviata una sola volta. La pagina permette anche di eseguire manualmente i
 checkpoint dovuti.
@@ -103,7 +103,7 @@ BETTER_STORAGE_MAX_GB=5
 BETTER_RAW_RETENTION_DAYS=30
 BETTER_CACHE_RETENTION_DAYS=7
 BETTER_PIPELINE_AUTO_COLLECT=true
-BETTER_PIPELINE_POLL_SECONDS=300
+BETTER_PIPELINE_POLL_SECONDS=1800
 ```
 
 Il report elenca solamente i candidati alla retention. Database, journal,

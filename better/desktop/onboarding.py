@@ -94,11 +94,24 @@ def choose(home):
 
     root = tk.Tk()
     root.title("Bettor — Configurazione iniziale")
-    root.geometry("660x390")
+    from better.desktop.launcher import resource_root
+
+    assets = resource_root() / "better/web/brand"
+    root.iconbitmap(default=str(assets / "bettor.ico"))
+    root.configure(background="#101923")
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    style.configure("TFrame", background="#101923")
+    style.configure("TLabel", background="#101923", foreground="#E9F0F5", font=("Segoe UI", 10))
+    style.configure("TButton", background="#253644", foreground="#E9F0F5", padding=10, borderwidth=1)
+    style.map("TButton", background=[("active", "#1B2935")], foreground=[("active", "#46D6B2")])
+    root.geometry("660x490")
     root.resizable(False, False)
     answer = None
     body = ttk.Frame(root, padding=26)
     body.pack(fill="both", expand=True)
+    root.brand_image = tk.PhotoImage(file=str(assets / "bettor-48.png"))
+    ttk.Label(body, image=root.brand_image).pack(anchor="w", pady=(0, 14))
     ttk.Label(body, text="Benvenuto in Bettor", font=("Segoe UI", 21, "bold")).pack(anchor="w")
     present = existing_data(home)
     text = (

@@ -27,7 +27,7 @@ Il setup verifica WebView2 e, se assente, indica il download Microsoft senza can
 
 ## Aggiornamento e disinstallazione
 
-Chiudere la finestra e arrestare il servizio dal menu Start prima di aggiornare. L'installazione crea un backup completo verificato e si interrompe se il backend è attivo o il backup fallisce. I dati sono conservati.
+Sistema → Aggiornamenti mostra la versione in esecuzione e consente download verificato e installazione dopo conferma. Il componente nativo chiude la finestra, arresta il backend e avvia il setup esterno; quindi riapre Bettor con gli stessi dati e porta. L'installazione crea un backup completo verificato e si interrompe se il backend è attivo o il backup fallisce. Nelle versioni precedenti chiudere la finestra e usare “Arresta servizio Bettor” dal menu Start prima di aggiornare. Vedi [manutenzione desktop](desktop-maintenance.md).
 
 La disinstallazione richiede la finestra chiusa, tenta l'arresto controllato del servizio e conserva dati/backup. Rimuove il marcatore di primo avvio: la reinstallazione chiede se mantenere i dati, iniziare da zero o ripristinare.
 

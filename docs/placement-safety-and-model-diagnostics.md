@@ -1,4 +1,6 @@
-﻿# Sicurezza delle giocate registrate e diagnostica del modello (0.2.5)
+# Sicurezza delle giocate registrate e diagnostica del modello (0.2.5)
+
+Aggiornamento 0.2.9: preparazione READY anticipata e conferma a T-15 dal primo kickoff di ciascuna multipla. Restano validi controlli e consenso; [tempi e protezioni](scheduled-confirmation.md).
 
 Le schedine confermate con addebito Banca sono giocate registrate, non vengono chiamate test nell’interfaccia. Bettor non trasmette puntate al bookmaker e l’addebito interno non prova un invio esterno. I vecchi nomi tecnici degli eventi e UUID sono conservati per compatibilità e idempotenza, senza riscrivere lo storico.
 
