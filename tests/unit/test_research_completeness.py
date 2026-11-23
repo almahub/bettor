@@ -145,3 +145,19 @@ async def test_analysis_enriches_partial_stats_but_skips_complete_stats():
             assert run.snapshot.stats.away == original.away
         assert not repo.all_records("validation_observations")
         await runtime.close()
+
+
+def test_complete_but_stale_sample_is_researched_and_equal_size_fresh_evidence_replaces_it():
+    from better.providers.fake import make_demo_bundle
+    match = make_demo_bundle("bet", as_of=RESEARCH_NOW).fixtures.match
+    fresh = normalize_football_data(match, football_result(match))
+    old = fresh.model_copy(update={"captured_at": RESEARCH_NOW - timedelta(days=3),
+        "home": fresh.home.model_copy(update={"xg_per_match": 1.3})})
+    assert not missing_model_research_fields(fresh, 10, as_of=RESEARCH_NOW, ttl_seconds=86400)
+    assert missing_model_research_fields(old, 10, as_of=RESEARCH_NOW, ttl_seconds=86400) == ("recent_form",)
+    replaced = merge_football_stats(old, fresh, as_of=RESEARCH_NOW, ttl_seconds=86400)
+    assert replaced is fresh
+    assert replaced.home.sample_size == old.home.sample_size
+    assert replaced.home.xg_per_match is None
+    assert old.captured_at == RESEARCH_NOW - timedelta(days=3)
+    assert merge_football_stats(old, None, as_of=RESEARCH_NOW, ttl_seconds=86400) is old

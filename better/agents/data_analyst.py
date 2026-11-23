@@ -46,6 +46,14 @@ class FootballDataAnalyst(BaseAgent):
         quality = self.quality(
             context, snapshot.provenance, snapshot.captured_at, self.settings.stats_ttl_seconds, min(coverage)
         )
+        # Keep all corroborations in the trace. Only selected observations supply
+        # the statistics. An additional matching CSV is not a model input.
+        inputs = tuple(p for p in snapshot.provenance if not (
+            p.source_id == "local_football_archive" and p.field == "recent_results_confirmation"
+        ))
+        if inputs and len(inputs) < len(snapshot.provenance):
+            quality = self.quality(context, inputs, max(p.retrieved_at for p in inputs),
+                                   self.settings.stats_ttl_seconds, min(coverage))
         evidence = self.evidence(
             context,
             "Observed home/away goal rates and source-supplied segments",

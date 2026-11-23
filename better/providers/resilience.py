@@ -37,23 +37,30 @@ class ProviderExecutor:
         retries: int = 1,
         rate_per_second: float = 10,
         breaker: CircuitBreaker | None = None,
+        source: str | None = None,
     ):
         if timeout <= 0 or retries < 0 or rate_per_second <= 0:
             raise ValueError("invalid provider execution policy")
         self.timeout, self.retries, self.interval = timeout, retries, 1 / rate_per_second
         self.breaker = breaker or CircuitBreaker()
+        self.source = source
         self._lock, self._last = asyncio.Lock(), 0.0
 
     async def call(self, operation: Callable[[], Awaitable[Any]]):
         for attempt in range(self.retries + 1):
-            self.breaker.before_call()
+            try:
+                self.breaker.before_call()
+            except BetterError as error:
+                remaining = max(0, self.breaker.recovery_seconds - (time.monotonic() - self.breaker.opened_at))
+                raise BetterError(error.detail.code, f'Provider circuit open; retry after {remaining:.0f}s',
+                                  source=self.source) from None
             async with self._lock:
                 await asyncio.sleep(max(0, self.interval - (time.monotonic() - self._last)))
                 self._last = time.monotonic()
             try:
                 result = await asyncio.wait_for(operation(), self.timeout)
             except TimeoutError:
-                error = BetterError(ErrorCode.TIMEOUT, "Provider request timed out")
+                error = BetterError(ErrorCode.TIMEOUT, "Provider request timed out", source=self.source)
             except BetterError as exc:
                 error = exc
             else:

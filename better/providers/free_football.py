@@ -1,4 +1,4 @@
-"""Local-first A/B observations and independently confirmed Serie A results.
+"""Local-first league observations, separate from verified settlement results.
 
 OpenFootball CC0 is an acquisition source, never sufficient by itself to settle.
 CSV imports require explicit timezone, source and competition; no invented times.
@@ -11,6 +11,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from html import unescape
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -29,14 +30,23 @@ from better.providers.result_identity import (
 from better.providers.results import MatchResult
 from better.storage.repository import canonical_hash
 
+DIVISIONS = {
+    "I1": ("Serie A", "Europe/Rome", "it.1", 135),
+    "I2": ("Serie B", "Europe/Rome", "it.2", 136),
+    "E0": ("Premier League", "Europe/London", "en.1", 39),
+}
+Division = Literal["I1", "I2", "E0"]
+
 
 class FreeFootballSettings(Contract):
     enabled: bool = False
     competitions: dict[str, str] = Field(default_factory=dict)
     seasons: tuple[int, ...] = (2026, 2025, 2024)
-    openfootball_divisions: tuple[str, ...] = ("I1",)
+    openfootball_divisions: tuple[Division, ...] = ("I1",)
+    csv_divisions: tuple[Division, ...] = ()
     csv_files: tuple[str, ...] = ()
     refresh_seconds: int = Field(default=21600, ge=300)
+    historical_refresh_seconds: int = Field(default=2592000, ge=21600)
     # Reviewed aliases are data, not fuzzy team matching or per-match overrides.
     team_aliases: dict[str, str] = Field(default_factory=dict)
 
@@ -51,7 +61,7 @@ def season_year(kickoff):
 
 
 def parse_openfootball(payload, division, season):
-    expected = "Serie A" if division == "I1" else "Serie B"
+    expected, timezone, _, _ = DIVISIONS[division]
     if expected not in payload.get("name", "") or str(season) not in payload.get("name", ""):
         raise ValueError("OpenFootball competition/season mismatch")
     rows = []
@@ -63,7 +73,7 @@ def parse_openfootball(payload, division, season):
         score = [None, None] if score is None else score
         if len(score) != 2 or (score != [None, None] and any(type(n) is not int or not 0 <= n <= 50 for n in score)):
             raise ValueError("Invalid regulation score")
-        kickoff = datetime.fromisoformat(row["date"] + "T" + row["time"]).replace(tzinfo=ZoneInfo("Europe/Rome"))
+        kickoff = datetime.fromisoformat(row["date"] + "T" + row["time"]).replace(tzinfo=ZoneInfo(timezone))
         rows.append({"division": division, "season": season, "kickoff": kickoff.astimezone(UTC).isoformat(),
                      "home": row["team1"], "away": row["team2"], "home_score": score[0], "away_score": score[1],
                      "statistics": {}})
@@ -77,11 +87,14 @@ def parse_csv(text):
     Optional observed statistics are kept, never filled with zero.
     """
     rows = []
-    for raw in csv.DictReader(io.StringIO(text.lstrip("\ufeff"))):
+    reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
+    if not {"division", "season", "kickoff", "home", "away", "home_score", "away_score", "source_url"} <= set(reader.fieldnames or ()):
+        raise ValueError("Invalid canonical CSV schema")
+    for raw in reader:
         division, season = raw["division"], int(raw["season"])
         kickoff = datetime.fromisoformat(raw["kickoff"].replace("Z", "+00:00"))
-        if division not in {"I1", "I2"} or kickoff.tzinfo is None or season_year(kickoff) != season:
-            raise ValueError("CSV requires A/B, correct season and timezone-aware kickoff")
+        if division not in DIVISIONS or kickoff.tzinfo is None or season_year(kickoff) != season:
+            raise ValueError("CSV requires a supported division, correct season and timezone-aware kickoff")
         if not raw["source_url"].startswith("https://"):
             raise ValueError("CSV requires original HTTPS source")
         scores = [int(raw[k]) for k in ("home_score", "away_score")]
@@ -93,6 +106,49 @@ def parse_csv(text):
         rows.append({"division": division, "season": season, "kickoff": kickoff.astimezone(UTC).isoformat(),
                      "home": raw["home"], "away": raw["away"], "home_score": scores[0], "away_score": scores[1],
                      "statistics": stats, "source_url": raw["source_url"]})
+    return rows
+
+
+def parse_football_data_csv(text, division, season, source_url):
+    """Observed football-data.co.uk CSV; no invented scores or kickoff times.
+
+    Provider times are local to the competition. The import acquisition time is
+    supplied separately by save_rows, never derived from the historic match date.
+    """
+    timezone = ZoneInfo(DIVISIONS[division][1])
+    rows = []
+    reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
+    if not {"Div", "Date", "Time", "HomeTeam", "AwayTeam", "FTHG", "FTAG"} <= set(reader.fieldnames or ()):
+        raise ValueError("Invalid football-data.co.uk CSV schema")
+    for raw in reader:
+        if raw.get("Div") != division:
+            raise ValueError("CSV competition mismatch")
+        if not raw.get("FTHG") or not raw.get("FTAG") or not raw.get("Time"):
+            continue
+        date = None
+        for fmt in ("%d/%m/%Y", "%d/%m/%y"):
+            try:
+                date = datetime.strptime(raw["Date"], fmt).date()
+                break
+            except ValueError:
+                pass
+        if date is None:
+            raise ValueError("Invalid CSV date")
+        kickoff = datetime.fromisoformat(date.isoformat() + "T" + raw["Time"]).replace(tzinfo=timezone)
+        if season_year(kickoff) != season:
+            raise ValueError("CSV season mismatch")
+        material = {"division": division, "season": season, "kickoff": kickoff.isoformat(),
+            "home": raw["HomeTeam"], "away": raw["AwayTeam"], "home_score": raw["FTHG"],
+            "away_score": raw["FTAG"], "source_url": source_url}
+        for field, column in (("home_shots", "HS"), ("away_shots", "AS"),
+                              ("home_shots_on_target", "HST"), ("away_shots_on_target", "AST")):
+            if raw.get(column):
+                material[field] = raw[column]
+        stream = io.StringIO()
+        writer = csv.DictWriter(stream, fieldnames=list(material))
+        writer.writeheader()
+        writer.writerow(material)
+        rows.extend(parse_csv(stream.getvalue()))
     return rows
 
 
@@ -120,10 +176,12 @@ class FreeFootballProvider:
             self.repository._append(c, "annotations", identifier="free-football:" + canonical_hash(payload),
                                     entity_id=entity, match_id=None, payload=payload)
 
-    def save_rows(self, rows, url, acquired_at):
+    def save_rows(self, rows, url, acquired_at, *, source_tier="C"):
+        if source_tier not in {"B", "C"}:
+            raise ValueError("Unsupported archive source tier")
         groups = {}
         for row in rows:
-            if row["division"] not in {"I1", "I2"}:
+            if row["division"] not in DIVISIONS:
                 raise ValueError("Unsupported division")
             key = (row["division"], row["season"])
             groups.setdefault(key, []).append(row)
@@ -131,8 +189,13 @@ class FreeFootballProvider:
             identities = [(r["kickoff"], self.key(r["home"]), self.key(r["away"])) for r in material]
             if len(set(identities)) != len(identities):
                 raise ValueError("Duplicate CSV/dataset fixtures")
-            digest = canonical_hash({"rows": material, "source_url": url})
+            stable = {"rows": material, "source_url": url}
+            if source_tier != "C":
+                stable["source_tier"] = source_tier
+            digest = canonical_hash(stable)
             content = {"rows": material, "source_url": url, "sha256": digest}
+            if source_tier != "C":
+                content["source_tier"] = source_tier
             entity = f"free-football:content:{digest}"
             self._append(entity, content)
             self._append(f"free-football:catalog:{division}:{season}:{url}", {
@@ -155,9 +218,9 @@ class FreeFootballProvider:
             content = self.repository.all_records("annotations", entity_id=check["content"])[0]
             for row in content["rows"]:
                 result.append({**row, "acquired_at": check["acquired_at"], "source_url": row.get("source_url", check["source_url"]),
-                               "sha256": content["sha256"], "source_tier": "C"})
+                               "sha256": content["sha256"], "source_tier": content.get("source_tier", "C")})
         if include_native and self.archived and self.archived.archive:
-            for league, code in ((135, "I1"), (136, "I2")):
+            for code, (_, _, _, league) in DIVISIONS.items():
                 if division is not None and code != division:
                     continue
                 for season in self.settings.seasons:
@@ -175,19 +238,23 @@ class FreeFootballProvider:
                             "home": row["teams"]["home"]["name"], "away": row["teams"]["away"]["name"],
                             "home_score": score["home"], "away_score": score["away"],
                             "statistics": {}, "source_tier": "B", "source_url": catalog["url"],
+                            "source_type": "API", "origin_id": "api-sports",
                             "acquired_at": catalog["retrieved_at"].isoformat(), "sha256": catalog["sha256"]})
         return result
 
     async def refresh_archive(self, *, matches=()):
         now = self.clock()
         checks = self.repository.all_records("annotations", entity_id="free-football:refresh")
-        if checks and (now - datetime.fromisoformat(checks[-1]["at"])).total_seconds() < self.settings.refresh_seconds:
+        latest = max((datetime.fromisoformat(row['at']) for row in checks), default=None)
+        if latest is not None and 0 <= (now - latest).total_seconds() < self.settings.refresh_seconds:
             return {"status": "CACHED", "requests": 0}
         requests, errors = 0, []
         for division in self.settings.openfootball_divisions:
             for season in self.settings.seasons:
                 suffix = f"{season}-{str(season + 1)[-2:]}"
-                url = f"https://raw.githubusercontent.com/openfootball/football.json/master/{suffix}/it.{1 if division == 'I1' else 2}.json"
+                url = f"https://raw.githubusercontent.com/openfootball/football.json/master/{suffix}/{DIVISIONS[division][2]}.json"
+                if self._historical_resource_fresh(url, season, now):
+                    continue
                 try:
                     response = await self.client.get(url)
                     requests += 1
@@ -196,6 +263,19 @@ class FreeFootballProvider:
                         continue
                     response.raise_for_status()
                     self.save_rows(parse_openfootball(response.json(), division, season), url, self.clock())
+                except (httpx.HTTPError, ValueError, KeyError) as error:
+                    errors.append({"source": url, "status": "ERROR", "type": type(error).__name__})
+        for division in self.settings.csv_divisions:
+            for season in self.settings.seasons:
+                suffix = f"{str(season)[-2:]}{str(season + 1)[-2:]}"
+                url = f"https://football-data.co.uk/mmz4281/{suffix}/{division}.csv"
+                if self._historical_resource_fresh(url, season, now):
+                    continue
+                try:
+                    response = await self.client.get(url)
+                    requests += 1
+                    response.raise_for_status()
+                    self.save_rows(parse_football_data_csv(response.text, division, season, url), url, self.clock())
                 except (httpx.HTTPError, ValueError, KeyError) as error:
                     errors.append({"source": url, "status": "ERROR", "type": type(error).__name__})
         for filename in self.settings.csv_files:
@@ -209,9 +289,57 @@ class FreeFootballProvider:
                 await self.football_data_org.refresh_standings(self.repository)
             except Exception as error:
                 errors.append({"source": "football_data_org:standings", "status": "ERROR", "type": type(error).__name__})
+            try:
+                requests += await self.refresh_football_data_results()
+            except Exception as error:
+                errors.append({"source": "football_data_org:results", "status": "ERROR", "type": type(error).__name__})
         self.last_refresh = {"at": now.isoformat(), "requests": requests, "issues": errors}
         self._append("free-football:refresh", self.last_refresh)
         return {"status": "PARTIAL" if errors else "OK", **self.last_refresh}
+
+    def _historical_resource_fresh(self, url, season, now):
+        if season >= season_year(now):
+            return False
+        checks = [r for r in self.repository.all_records("annotations")
+                  if r.get("source_url") == url and r.get("acquired_at") and r.get("content")]
+        acquired = max((datetime.fromisoformat(r["acquired_at"]) for r in checks), default=None)
+        return acquired is not None and 0 <= (now - acquired).total_seconds() < self.settings.historical_refresh_seconds
+
+    async def refresh_football_data_results(self):
+        """Reacquire completed observations, without relabelling cached evidence."""
+        provider = self.football_data_org.fixture_provider
+        now = self.clock()
+        season = season_year(now)
+        targets = {target: self.settings.competitions[source]
+                   for source, target in self.football_data_org.competitions.items()
+                   if self.settings.competitions.get(source) in DIVISIONS}
+        for target, division in sorted(targets.items()):
+            native = target.removeprefix('football-data:competition:')
+            payload, acquired, headers, url = await provider._request(
+                f'/competitions/{native}/matches', params={'season': str(season), 'status': 'FINISHED'})
+            if not isinstance(payload.get('matches'), list):
+                raise ValueError('Invalid football-data.org completed matches')
+            rows = []
+            for raw in payload['matches']:
+                record = provider._normalize(raw, retrieved_at=acquired, headers=headers, url=url)
+                if record.competition_id != target or season_year(record.match.kickoff) != season:
+                    raise ValueError('Completed result competition/season conflict')
+                if (record.status != 'FINISHED' or record.score_duration != 'REGULAR'
+                        or record.match.kickoff >= acquired
+                        or record.full_time_home is None or record.full_time_away is None):
+                    continue
+                rows.append({'division': division, 'season': season,
+                             'kickoff': record.match.kickoff.isoformat(),
+                             'home': record.match.home_team, 'away': record.match.away_team,
+                             'home_score': record.full_time_home, 'away_score': record.full_time_away,
+                             'statistics': {}, 'source_url': url,
+                             'origin_id': record.provenance.source_id,
+                             'source_type': record.provenance.source_type.value,
+                             'published_at': record.last_updated.isoformat() if record.last_updated else None,
+                             'raw_reference': record.provenance.raw_reference})
+            if rows:
+                self.save_rows(rows, url, acquired, source_tier="B")
+        return len(targets)
 
     async def find_candidates(self, match, as_of):
         division = self.settings.competitions.get(match.competition)
@@ -229,7 +357,7 @@ class FreeFootballProvider:
             # Use verified aliases only; preserve the source names in evidence.
             found.append(ResultIdentityCandidate(
                 provider=self.provider_id, source_tier="B", provider_match_id="free-football:match:" + canonical_hash({"date": row["kickoff"], "division": division, "home": home, "away": away}),
-                competition_id=self.competition_target(match.competition), competition_name="Serie A" if division == "I1" else "Serie B",
+                competition_id=self.competition_target(match.competition), competition_name=DIVISIONS[division][0],
                 home_team_id="free-football:team:" + home, away_team_id="free-football:team:" + away,
                 home_team_name=match.home_team, away_team_name=match.away_team, kickoff=kickoff,
                 source_url=row["source_url"], evidence=row,
@@ -237,7 +365,10 @@ class FreeFootballProvider:
         # Same observation in multiple imports is one candidate; disagreements
         # remain separate and must not create a verified mapping.
         unique = {(r.provider_match_id, r.evidence["home_score"], r.evidence["away_score"]): r for r in found}
-        return tuple(unique.values())
+        scored = {r.provider_match_id for r in unique.values()
+                  if r.evidence['home_score'] is not None and r.evidence['away_score'] is not None}
+        return tuple(r for r in unique.values() if r.provider_match_id not in scored
+                     or (r.evidence['home_score'] is not None and r.evidence['away_score'] is not None))
 
     async def _official_confirmation(self, row, as_of):
         if row["division"] != "I1":
@@ -291,7 +422,8 @@ class FreeFootballProvider:
         if official is None:
             return None
         home, away, url, published = official
-        conflict = row["home_score"] is not None and (home, away) != (row["home_score"], row["away_score"])
+        conflict = any(r['home_score'] is not None and r['away_score'] is not None
+                       and (home, away) != (r['home_score'], r['away_score']) for r in rows)
         return MatchResult(match_id=identity.source_match_id, final_status="CONFLICT" if conflict else "FINAL",
             home_score=None if conflict else home, away_score=None if conflict else away,
             source="Lega Serie A official report; fixture identity matched to local open observations",
@@ -304,12 +436,15 @@ class FreeFootballProvider:
         division = self.settings.competitions.get(match.competition)
         if not division:
             raise BetterError(ErrorCode.MISSING_DATA, "Competizione non operativa", source="local_archive")
-        observations = self.rows(as_of, include_native=True)
+        # Cross-season observations may include relegated/promoted Italian teams,
+        # but never namesakes from a different country's competition.
+        compatible = {"I1", "I2"} if division in {"I1", "I2"} else {division}
+        observations = [row for row in self.rows(as_of, include_native=True) if row["division"] in compatible]
         if not observations and self.archived:
             return await self.archived.get_stats(match_id, as_of)
         profiles, provenance, cutoffs = [], [], []
         for team_id, name in ((match.home_team_id, match.home_team), (match.away_team_id, match.away_team)):
-            prior, evidence = {}, {}
+            prior, evidence, confirmations = {}, {}, {}
             for row in observations:
                 if any(type(row[s]) is not int for s in ("home_score", "away_score")):
                     continue
@@ -321,9 +456,15 @@ class FreeFootballProvider:
                 home = self.key(name) == self.key(row["home"])
                 opponent = row["away"] if home else row["home"]
                 gf, ga = (row["home_score"], row["away_score"]) if home else (row["away_score"], row["home_score"])
-                key = (date, self.key(opponent), home)
+                key = next((k for k in prior if k[1:] == (self.key(opponent), home)
+                            and abs((k[0] - date).total_seconds()) <= 15 * 60),
+                           (date, self.key(opponent), home))
+                # A reported delay of a few minutes is not another match. Keep
+                # all real provenance and reject incompatible regulation scores.
+                date = key[0]
                 if key in prior and (prior[key].goals_for, prior[key].goals_against) != (gf, ga):
                     raise BetterError(ErrorCode.SCHEMA_ERROR, "Conflitto tra risultati locali", source="local_archive")
+                confirmations.setdefault(key, []).append(row)
                 if key in evidence and evidence[key]["source_tier"] < row["source_tier"]:
                     continue
                 prior[key] = RecentTeamMatch(fixture_id="free-football:observation:" + canonical_hash({"date": row["kickoff"], "home": self.key(row["home"]), "away": self.key(row["away"])}),
@@ -340,10 +481,14 @@ class FreeFootballProvider:
             used = {r.fixture_id for r in recent}
             for key, r in prior.items():
                 if r.fixture_id in used or r.competition_id == f"free-football:{division}:{season_year(match.kickoff)}":
-                    row = evidence[key]
-                    provenance.append(Provenance(source_id="local_football_archive", source_type=SourceType.MEDIA,
-                        reliability_tier=ReliabilityTier(row["source_tier"]), url=row["source_url"], retrieved_at=datetime.fromisoformat(row["acquired_at"]),
-                        field="recent_results", raw_reference="sha256:" + row["sha256"]))
+                    # Retain the stronger observation and its real tier, together
+                    # with actual independent reacquisitions of the same score.
+                    for row in confirmations[key]:
+                        provenance.append(Provenance(source_id="local_football_archive", primary_source_id=row.get("origin_id") or row["source_url"],
+                            source_type=SourceType(row.get("source_type", "MEDIA")),
+                            published_at=row.get("published_at"),
+                            reliability_tier=ReliabilityTier(row["source_tier"]), url=row["source_url"], retrieved_at=datetime.fromisoformat(row["acquired_at"]),
+                            field="recent_results" if row is evidence[key] else "recent_results_confirmation", raw_reference=row.get("raw_reference") or "sha256:" + row["sha256"]))
             segments = {k: v for k, v in {
                 "last_5": APIFootballProvider._segment(recent[:5]), "last_10": APIFootballProvider._segment(recent),
                 "season": APIFootballProvider._segment([r for r in prior.values() if r.competition_id == f"free-football:{division}:{season_year(match.kickoff)}"]),

@@ -77,6 +77,15 @@ class CompositeResultProvider:
     def team_target(self, source_id, provider=None):
         return self._configured_target("team_target", source_id, provider)
 
+    def team_name_key(self, name, provider):
+        from better.providers.result_identity import normalize_team_name
+        for candidate in self.providers:
+            if getattr(candidate, "provider_id", None) == provider:
+                method = getattr(candidate, "team_name_key", None)
+                if method is not None:
+                    return method(name, provider)
+        return normalize_team_name(name)
+
     def _configured_target(self, method_name, source_id, provider):
         for candidate in self.providers:
             if provider is not None and getattr(candidate, "provider_id", None) != provider:
@@ -125,10 +134,16 @@ class FootballDataOrgResultProvider:
 
     provider_id = "football_data_org"
 
-    def __init__(self, fixture_provider, *, owns_fixture_provider=False, competitions=None):
+    def __init__(self, fixture_provider, *, owns_fixture_provider=False, competitions=None, team_aliases=None):
         self.fixture_provider = fixture_provider
         self.owns_fixture_provider = owns_fixture_provider
         self.competitions = competitions or {}
+        self.team_aliases = team_aliases or {}
+
+    def team_name_key(self, name, provider=None):
+        from better.providers.result_identity import normalize_team_name
+        key = normalize_team_name(name)
+        return self.team_aliases.get(key, key)
 
     def competition_target(self, source_id, provider=None):
         return self.competitions.get(source_id)

@@ -190,6 +190,9 @@ class BatchAnalysisService:
         return (max(choices, key=lambda row: (row["ranking_score"], row["selection"])), None) if choices else (None, reason)
 
     def ranked_candidates(self, run):
+        stats = run.snapshot.stats
+        if stats is not None and (run.as_of - stats.captured_at).total_seconds() > self.runtime.settings.stats_ttl_seconds:
+            return [], "STATS_STALE"
         reason_codes = set(run.decision.reason_codes)
         raw_forecasts = tuple(
             item for item in run.forecast.markets if item.method == "RAW_POISSON"

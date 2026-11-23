@@ -248,8 +248,8 @@ class DeterministicResultIdentityResolver:
                 else (
                     configured_home == candidate.home_team_id
                     if configured_home
-                    else normalize_team_name(match_identity.home_team)
-                    == normalize_team_name(candidate.home_team_name)
+                    else self._team_name_key(match_identity.home_team, candidate.provider)
+                    == self._team_name_key(candidate.home_team_name, candidate.provider)
                 )
             )
             away_ok = (
@@ -258,8 +258,8 @@ class DeterministicResultIdentityResolver:
                 else (
                     configured_away == candidate.away_team_id
                     if configured_away
-                    else normalize_team_name(match_identity.away_team)
-                    == normalize_team_name(candidate.away_team_name)
+                    else self._team_name_key(match_identity.away_team, candidate.provider)
+                    == self._team_name_key(candidate.away_team_name, candidate.provider)
                 )
             )
             if competition_ok and kickoff_ok and home_ok and away_ok:
@@ -377,6 +377,10 @@ class DeterministicResultIdentityResolver:
     def _configured_target(self, method_name, source_id, provider):
         method = getattr(self.candidate_provider, method_name, None)
         return method(source_id, provider) if method is not None else None
+
+    def _team_name_key(self, name, provider):
+        method = getattr(self.candidate_provider, "team_name_key", None)
+        return method(name, provider) if method is not None else normalize_team_name(name)
 
     @staticmethod
     def _identity(match: Match, candidate: ResultIdentityCandidate, method: str, at: datetime):

@@ -331,6 +331,7 @@ class ValidationCohortService:
                 and row.get("market") == market.value
                 and row.get("feature_schema_version") == feature_schema_version
                 and row.get("config_hash") == self.settings.version
+                and row.get("competition_id") == match.competition
             ]
             if validation_rows:
                 validation_status = ValidationStatus(
@@ -341,6 +342,7 @@ class ValidationCohortService:
                             market.value,
                             feature_schema_version,
                             self.settings.version,
+                            match.competition,
                         ),
                         validation_rows,
                     )["validation_status"]
@@ -877,8 +879,11 @@ class ValidationCohortService:
 
     def report(self):
         states = self.states()
-        hidden_ids = {r["match_id"] for r in self.repository.all_records("annotations", entity_id="cohort:hidden:v1")
-                      if r.get("kind") == "HIDDEN"}
+        visibility = {}
+        for row in self.repository.all_records('annotations', entity_id='cohort:hidden:v1'):
+            if row.get('kind') in {'HIDDEN', 'RESTORED'}:
+                visibility.setdefault(row['match_id'], row['kind'])
+        hidden_ids = {identifier for identifier, kind in visibility.items() if kind == 'HIDDEN'}
         predictions = self.repository.all_records("canonical_predictions")
         observations = self.repository.all_records("validation_observations")
         costs = self.repository.all_records("validation_cost_events")
@@ -905,6 +910,7 @@ class ValidationCohortService:
                         row["market"],
                         row["feature_schema_version"],
                         row["config_hash"],
+                        row["competition_id"],
                     )
                 ].append(row)
         measured = [self._metrics(key, rows) for key, rows in sorted(groups.items())]
@@ -1012,7 +1018,7 @@ class ValidationCohortService:
         }
 
     def _metrics(self, key, rows):
-        model, version, market, feature, config_hash = key
+        model, version, market, feature, config_hash, competition = key
         assessment = validate_multiclass_model(
             [row["probabilities"] for row in rows],
             [row["actual_selection"] for row in rows],
@@ -1047,6 +1053,7 @@ class ValidationCohortService:
             "market": market,
             "feature_schema_version": feature,
             "config_hash": config_hash,
+            "competition_id": competition,
             "sample_size": len(rows),
             "minimum_sample": self.settings.min_sample,
             "progress": f"{len(rows)} / {self.settings.min_sample}",

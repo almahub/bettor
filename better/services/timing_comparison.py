@@ -1,4 +1,4 @@
-"""Append-only Serie A T24 analyses and candidates; never writes bank rows."""
+"""Append-only configured-league T48 analyses; never writes bank rows."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -12,8 +12,10 @@ from better.storage.db import TABLES
 from better.storage.repository import canonical_hash
 
 ENTITY = "timing-comparison:v1"
-WINDOWS = {"T24": timedelta(hours=24)}
+WINDOWS = {"T48": timedelta(hours=48)}
 GRACE = timedelta(minutes=10)
+RETRY_DELAY = timedelta(minutes=1)
+CLAIM_LEASE = timedelta(minutes=3)
 
 
 def moment(value):
@@ -28,6 +30,8 @@ class TimingComparisonService:
         self.clock = clock or (lambda: datetime.now(UTC))
         from better.services.automation_control import AutomationControl
         self.control = AutomationControl(self.repository, self.settings, clock=self.clock)
+        if runtime is not None and not hasattr(runtime, '_timing_active'):
+            runtime._timing_active = set()
 
     def rows(self):
         return self.repository.all_records("annotations", entity_id=ENTITY)
@@ -46,16 +50,37 @@ class TimingComparisonService:
                 self.repository._append(conn, "annotations", **values)
 
     def _claim(self, match, checkpoint):
-        identifier = "timing-claim:" + self._id(match, checkpoint)
+        base = "timing-claim:" + self._id(match, checkpoint)
         table = TABLES["annotations"]
         try:
             with self.repository.engine.begin() as conn:
-                if conn.execute(select(table.c.id).where(table.c.id == identifier)).first():
+                if conn.dialect.name == 'sqlite':
+                    conn.exec_driver_sql('BEGIN IMMEDIATE')
+                rows = list(conn.execute(select(table.c.payload).where(
+                    table.c.entity_id == ENTITY, table.c.match_id == match.match_id)).scalars())
+                rows = [r for r in rows if r['checkpoint'] == checkpoint and moment(r['kickoff']) == match.kickoff]
+                if any(r['kind'] == 'CAPTURE' for r in rows):
                     return False
+                claims = [r for r in rows if r['kind'] == 'CLAIM']
+                if claims:
+                    latest = max(claims, key=lambda r: r.get('attempt', 1))
+                    attempt = latest.get('attempt', 1)
+                    failed = next((r for r in rows if r['kind'] == 'FAILED' and r.get('attempt', 1) == attempt), None)
+                    delay = RETRY_DELAY if failed else CLAIM_LEASE
+                    if (attempt >= 3 or self.clock() < moment(latest['at']) + delay
+                            or (failed and not failed.get('diagnostic', {}).get('retryable'))):
+                        return False
+                else:
+                    attempt = 0
+                due = match.kickoff - WINDOWS.get(checkpoint, timedelta(hours=24))
+                if not due <= self.clock() < min(due + GRACE, match.kickoff):
+                    return False
+                attempt += 1
+                identifier = base if attempt == 1 else base + f':attempt:{attempt}'
                 self._append(identifier, {"kind": "CLAIM", "match_id": match.match_id,
                     "kickoff": match.kickoff.isoformat(), "checkpoint": checkpoint,
-                    "at": self.clock().isoformat()}, connection=conn)
-            return True
+                    "attempt": attempt, "at": self.clock().isoformat()}, connection=conn)
+            return attempt
         except IntegrityError:
             return False
 
@@ -67,10 +92,31 @@ class TimingComparisonService:
                 "MODEL_INPUT_INSUFFICIENT", "MODEL_INPUT_FEATURES_INSUFFICIENT"
             } for row in run.forecast.markets))
 
+    def retry_deadlines(self):
+        groups = {}
+        for row in self.rows():
+            if row['checkpoint'] in WINDOWS:
+                groups.setdefault((row['match_id'], row['kickoff'], row['checkpoint']), []).append(row)
+        deadlines = []
+        for (_, kickoff, checkpoint), rows in groups.items():
+            claims = [r for r in rows if r['kind'] == 'CLAIM']
+            if not claims or any(r['kind'] == 'CAPTURE' for r in rows):
+                continue
+            claim = max(claims, key=lambda r: r.get('attempt', 1))
+            attempt = claim.get('attempt', 1)
+            failed = next((r for r in rows if r['kind'] == 'FAILED' and r.get('attempt', 1) == attempt), None)
+            if attempt >= 3 or (failed and not failed.get('diagnostic', {}).get('retryable')):
+                continue
+            end = moment(kickoff) - WINDOWS[checkpoint] + GRACE
+            retry = moment(claim['at']) + (RETRY_DELAY if failed else CLAIM_LEASE)
+            if self.clock() < end and retry < end:
+                deadlines.append(retry)
+        return deadlines
+
     def store(self, match, checkpoint, run):
         end = self.clock()
-        # Preserve the historical reader contract; scheduling uses T24 only.
-        scheduled = match.kickoff - (timedelta(minutes=30) if checkpoint == "T30" else WINDOWS[checkpoint])
+        # Preserve the historical reader contract; scheduling uses T48 only.
+        scheduled = match.kickoff - (timedelta(minutes=30) if checkpoint == "T30" else {**WINDOWS, "T24": timedelta(hours=24)}[checkpoint])
         if not (scheduled <= run.as_of <= end < min(match.kickoff, scheduled + GRACE)) or run.created_at > end:
             raise ValueError("TIMING_WINDOW_MISSED: acquisizione fuori finestra pre-match")
         if run.match_id != match.match_id or run.snapshot.match.kickoff != match.kickoff:
@@ -138,9 +184,9 @@ class TimingComparisonService:
                       "MISSING" if self.clock() >= due + GRACE else "SCHEDULED")
             checkpoints[name] = {"status": status, "scheduled_at": due.isoformat(),
                 "capture": capture, "error": failure.get("diagnostic") if failure else None}
-        return {"enabled": self.control.policy()["enabled"], "mode": "T24_ONLY",
+        return {"enabled": self.control.policy()["enabled"], "mode": "T48_ONLY",
             "checkpoints": checkpoints, "verdict": "INITIAL_ANALYSIS",
-            "reason": "Analisi automatica T−24; nessun confronto successivo",
+            "reason": "Analisi automatica T−48; nessun confronto successivo",
             "paired": False, "paid_research": self.control.report()["paid_research"]}
 
     def _transfer(self, match, capture):
@@ -148,28 +194,28 @@ class TimingComparisonService:
         from better.services.batch_analysis import BatchAnalysisService
         from better.services.salabet_service import SalaBetService
 
-        identifier = "timing-transfer:" + self._id(match, "T24")
+        identifier = "timing-transfer:" + self._id(match, "T48")
         if any(r.get("transfer_id") == identifier for r in self.rows()):
             return None
-        if not self.clock() < match.kickoff <= self.clock() + timedelta(hours=24):
+        if not self.clock() < match.kickoff <= self.clock() + timedelta(hours=48):
             return None
         run = self.repository.get_run(capture["analysis_id"])
         if run is None:
-            raise ValueError("T24_ANALYSIS_NOT_FOUND")
+            raise ValueError("T48_ANALYSIS_NOT_FOUND")
         item, reason = (BatchAnalysisService(self.runtime, clock=self.clock)._best_candidate(run)
                         if run.forecast else (None, "MODEL_INPUT_INSUFFICIENT"))
         payload = {"kind": "TRANSFER", "transfer_id": identifier, "match_id": match.match_id,
-            "kickoff": match.kickoff.isoformat(), "checkpoint": "T24", "at": self.clock().isoformat(),
+            "kickoff": match.kickoff.isoformat(), "checkpoint": "T48", "at": self.clock().isoformat(),
             "analysis_id": capture["analysis_id"], "candidate_id": None, "reason": reason}
         if item:
             candidate = SalaBetService(self.repository, clock=self.clock).create_batch_candidate(
                 BetCandidateCreate(analysis_id=item["analysis_id"], prediction_id=item["prediction_id"],
                     market=item["market"], selection=item["selection"]),
                 {"ranking_score": item["ranking_score"], "ranking_reasons":
-                    ["Automazione Serie A T−24", *item["reasons"]], "batch_status": item["status"],
+                    ["Automazione campionati T−48", *item["reasons"]], "batch_status": item["status"],
                  "data_quality": item["data_quality"], "sample_size": item["sample_size"],
                  "score_breakdown": item["score_breakdown"], "blockers": item["blockers"],
-                 "automation_checkpoint": "T24"})
+                 "automation_checkpoint": "T48"})
             payload["candidate_id"] = str(candidate.id)
         self._append(identifier, payload)
         return payload
@@ -196,8 +242,13 @@ class TimingComparisonService:
                 due = match.kickoff - offset
                 if not (due <= self.clock() < due + GRACE and self.clock() < match.kickoff):
                     continue
-                if not self._claim(match, name):
+                key = self._id(match, name)
+                if key in self.runtime._timing_active:
                     continue
+                attempt = self._claim(match, name)
+                if not attempt:
+                    continue
+                self.runtime._timing_active.add(key)
                 try:
                     shadow = getattr(self.runtime, "shadow", None)
                     if self.settings.system_two_enabled or getattr(getattr(shadow, "settings", None), "enabled", False):
@@ -208,12 +259,14 @@ class TimingComparisonService:
                     report["captured"].append({"match_id": match.match_id, "checkpoint": name, "analysis_id": row["analysis_id"]})
                 except Exception as error:
                     diagnostic = failure_detail(error, match_id=match.match_id, checkpoint=name, stage="TIMING_COMPARISON")
-                    self._append("timing-failed:" + self._id(match, name), {"kind": "FAILED",
+                    self._append("timing-failed:" + self._id(match, name) + f':attempt:{attempt}', {"kind": "FAILED",
                         "match_id": match.match_id, "kickoff": match.kickoff.isoformat(),
-                        "checkpoint": name, "at": self.clock().isoformat(), "diagnostic": diagnostic})
+                        "checkpoint": name, "attempt": attempt, "at": self.clock().isoformat(), "diagnostic": diagnostic})
                     report["failed"].append(diagnostic)
+                finally:
+                    self.runtime._timing_active.discard(key)
         for capture in self.rows():
-            if capture["kind"] != "CAPTURE" or capture["checkpoint"] != "T24" or not capture.get("match"):
+            if capture["kind"] != "CAPTURE" or capture["checkpoint"] != "T48" or not capture.get("match"):
                 continue
             match = Match.model_validate(capture["match"])
             if match.competition not in allowed:
@@ -224,17 +277,18 @@ class TimingComparisonService:
                     report["transferred"].append(transferred)
             except Exception as error:
                 report["failed"].append(failure_detail(error, match_id=match.match_id,
-                    checkpoint="T24", stage="T24_CANDIDATE_TRANSFER"))
+                    checkpoint="T48", stage="T48_CANDIDATE_TRANSFER"))
         return report
 
     def report(self):
         rows = self.rows()
-        captures = [r for r in rows if r["kind"] == "CAPTURE" and r["checkpoint"] == "T24"]
-        transfers = [r for r in rows if r["kind"] == "TRANSFER"]
+        captures = [r for r in rows if r["kind"] == "CAPTURE" and r["checkpoint"] == "T48"]
+        transfers = [r for r in rows if r["kind"] == "TRANSFER" and r["checkpoint"] == "T48"]
         matches = len({(r["match_id"], r["kickoff"]) for r in captures})
         control = self.control.report()
-        return {"enabled": control["enabled"], "scope": "SERIE_A_ONLY", "mode": "T24_ONLY",
-            "checkpoints": ["T24"], "control": control, "paid_research": control["paid_research"],
+        return {"enabled": control["enabled"], "scope": "CONFIGURED_COMPETITIONS", "mode": "T48_ONLY",
+            "competitions": list(self.settings.timing_comparison_competitions),
+            "checkpoints": ["T48"], "control": control, "paid_research": control["paid_research"],
             "added_paid_budget": 0, "proposed_budget": {"per_match": float(control["per_match_eur"]),
                 "per_day": float(control["per_day_eur"]), "per_week": float(control["per_week_eur"]),
                 "currency": "EUR", "approved": self.control.policy().get("persisted", False)},
@@ -244,5 +298,5 @@ class TimingComparisonService:
             "calls": sum(r["calls"] for r in captures), "cost": sum(r["cost"] for r in captures),
             "unknown_cost_captures": sum(not r.get("cost_known", True) for r in captures),
             "cost_per_match": sum(r["cost"] for r in captures) / matches if matches and all(r.get("cost_known", True) for r in captures) else None,
-            "failed": [r for r in rows if r["kind"] == "FAILED" and r["checkpoint"] == "T24"][-10:],
-            "note": "Analisi Serie A T−24; candidate entro 24 ore dal kickoff. Nessun confronto successivo e nessuna puntata automatica."}
+            "failed": [r for r in rows if r["kind"] == "FAILED" and r["checkpoint"] == "T48"][-10:],
+            "note": "Analisi campionati configurati T−48; candidate entro 48 ore dal kickoff. Nessun confronto successivo e nessuna puntata automatica."}

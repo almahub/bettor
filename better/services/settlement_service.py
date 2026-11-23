@@ -35,10 +35,10 @@ class SettlementService:
 
     def pending(self) -> list[dict]:
         now = self.clock()
-        settled = {row["match_id"] for row in self.repository.list_records("match_results", last=1000)}
+        settled = {row["match_id"] for row in self.repository.all_records("match_results")}
         pending = []
         seen = set()
-        for run in reversed(self.repository.list_records("analysis_runs", last=1000)):
+        for run in self.repository.all_records("analysis_runs"):
             match = run["snapshot"]["match"]
             match_id = match["match_id"]
             kickoff = datetime.fromisoformat(match["kickoff"])

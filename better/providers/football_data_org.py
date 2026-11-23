@@ -1,6 +1,7 @@
 """football-data.org v4 fixtures/results; no inferred statistics, odds or lineups.
 
-Official contract reviewed 2026-09-28. The v4 dateTo filter is exclusive.
+Date-window responses are filtered again by the actual UTC kickoff. Real
+responses can include fixtures crossing the requested UTC-day boundary.
 Current API representations are never presented as historical as-of snapshots.
 """
 
@@ -291,11 +292,10 @@ class FootballDataOrgFixtureProvider:
                         ErrorCode.SCHEMA_ERROR, "Duplicate fixture ID in provider list", source=PROVIDER_ID
                     )
                 if record.match.kickoff.astimezone(UTC).date() != day:
-                    raise BetterError(
-                        ErrorCode.SCHEMA_ERROR,
-                        "Provider returned fixture outside requested UTC day",
-                        source=PROVIDER_ID,
-                    )
+                    if abs((record.match.kickoff.astimezone(UTC).date() - day).days) <= 1:
+                        continue
+                    raise BetterError(ErrorCode.SCHEMA_ERROR,
+                        "Provider returned fixture outside requested date window", source=PROVIDER_ID)
                 seen.add(record.provider_match_id)
                 pairs.append((record, item))
             # Record/cache only after the complete list passes validation.

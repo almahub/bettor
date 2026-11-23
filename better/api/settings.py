@@ -141,3 +141,42 @@ def mount_settings(app, runtime):
 
     from better.api.backups import mount_backups
     mount_backups(app, runtime, guard, response)
+
+    def api_costs():
+        from better.services.api_control import APIControlService
+        if getattr(app.state, 'api_control', None) is None:
+            app.state.api_control = APIControlService(repository=runtime().repository)
+        return app.state.api_control
+
+    @app.post('/system/settings/openai-credit')
+    async def openai_credit(request: Request):
+        guard(request, True)
+        from better.services.openai_credit import CreditReference, OpenAICredit
+        raw = await request.body()
+        if len(raw) > 2000:
+            raise HTTPException(413, 'Richiesta troppo grande')
+        try:
+            validated = CreditReference.model_validate_json(raw)
+            # Include the current local export in the baseline, without calling
+            # OpenAI or consuming research credits while recording a balance.
+            await api_costs().report(force_local=True)
+            ledger = OpenAICredit(runtime().repository)
+            ledger.set_reference(validated)
+            return response(ledger.report(api_costs()._local_calls(None, include_archived=True)))
+        except (ValueError, KeyError):
+            raise HTTPException(422, 'Saldo o soglie non validi; usa importi positivi con massimo due decimali e soglia critica non superiore all’avviso.') from None
+
+    @app.post('/system/settings/openai-exports')
+    async def openai_exports(request: Request):
+        guard(request, True)
+        raw = await request.body()
+        if len(raw) > 10_000_000:
+            raise HTTPException(413, 'Export troppo grandi')
+        try:
+            payload = json.loads(raw)
+            if set(payload) != {'costs', 'usage'}:
+                raise ValueError()
+            api_costs().import_exports(payload['costs'], payload['usage'])
+            return response(await api_costs().report(force_local=True))
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(422, 'Export non validi o con intervalli parzialmente sovrapposti. Usa i file JSON Costs e Completions Usage di OpenAI.') from None

@@ -41,8 +41,8 @@ test('dashboard controller renders every decision and view from backend contract
   contracts['/workspace'].installation=null;
   await click({action:'refresh'});
   assert.match(markup(),/Quadro operativo/);
-  assert.match(markup(),/Automazione Piazza Scommessa/);
-  assert.match(markup(),/Prepara le multiple/);
+  assert.match(markup(),/Conferma automatica giocate/);
+  assert.match(markup(),/Conferma lo stile salvato/);
   assert.match(markup(),/data-action="placement-automation-toggle"/);
   assert.match(markup(),/Stato operativo/);
   assert.match(markup(),/aria-label="Apri SalaBet"/);
@@ -79,6 +79,17 @@ test('dashboard controller renders every decision and view from backend contract
   assert.match(markup(),/Analisi batch/);
   assert.match(markup(),/Analizza tutte/);
   assert.match(markup(),/Analizza selezione \(0\)/);
+  // Configured Premier fixtures must survive the former Italian-only UI filter;
+  // retired competitions must not reappear even if a stale API list contains one.
+  const leagueWorkspace=contracts['/workspace'];const leagueMatches=contracts['/matches'];
+  contracts['/workspace']={...leagueWorkspace,fixture_source:'888sport_it',active_competitions:['PL'],competition_names:{PL:'Premier League',SB:'Serie B'}};
+  contracts['/matches']=[{...leagueMatches[0],match_id:'premier-fixture',competition:'PL',home_team:'Premier Home',away_team:'Premier Away'},
+    {...leagueMatches[0],match_id:'retired-fixture',competition:'SB',home_team:'Retired Home',away_team:'Retired Away'}];
+  await click({action:'refresh'});
+  assert.match(markup(),/Premier Home/);
+  assert.doesNotMatch(markup(),/Retired Home/);
+  contracts['/workspace']=leagueWorkspace;contracts['/matches']=leagueMatches;
+  await click({action:'refresh'});
   assert.equal(requests.some(([,o])=>o.method==='POST'),false,'Page load must not initiate an analysis');
   contracts['/salabet/automatic-multiples/placement']={...contracts['/data-pipeline'].automatic_multiples,enabled:true,execution:{created:[],diagnostics:[]}};
   await click({page:'dashboard'});
@@ -348,11 +359,14 @@ test('dashboard controller renders every decision and view from backend contract
   assert.match(markup(),/Competizioni configurate/);
   assert.match(markup(),/Richieste processo/);
   const beforeFootballData=requests.length;
-  contracts['/workspace'].football_data_org={configured:true,status:'ACQUIRED',acquired_at:'2026-11-03T10:18:41Z'};
+  contracts['/workspace'].football_data_org={configured:true,status:'ACQUIRED',acquired_at:'2026-11-03T10:18:41Z',
+    competitions:[{competition:'Serie A',competition_id:2019,acquired_at:'2026-11-03T10:18:41Z'},
+      {competition:'Premier League',competition_id:2021,acquired_at:'2026-11-03T10:18:41Z'}]};
   await click({apiControlTab:'football_data_org'});
   assert.match(markup(),/DATI ACQUISITI/);
   assert.match(markup(),/football-data.org<\/span><strong class="provider-ok"[^>]*>VERIFICATA/);
-  assert.match(markup(),/Serie A · SA \/ 2019/);
+  assert.match(markup(),/Serie A · 2019/);
+  assert.match(markup(),/Premier League · 2021/);
   assert.match(markup(),/Disponibile nel database/);
   assert.doesNotMatch(markup(),/Saved agents|Cache e richieste/);
   assert.equal(requests.length,beforeFootballData,'Provider tab reads local state without API calls');
@@ -370,6 +384,8 @@ test('dashboard controller renders every decision and view from backend contract
   assert.match(markup(),/Archivio e fonti gratuite/);
   assert.match(markup(),/FOOTBALL_DATA_ORG_API_KEY/);
   assert.match(markup(),/chiamate di rete disattivate/);
+  assert.doesNotMatch(markup(),/data-api-control-tab="api_football"/);
+  assert.doesNotMatch(markup(),/API-Football<\/span><strong/);
   contracts['/sources/api-football/check']=previousFootball;
   await click({action:'check-source'});
   assert.match(markup(),/Accesso season<\/dt><dd>ACCESSIBILE/);
@@ -431,7 +447,7 @@ test('dashboard controller renders every decision and view from backend contract
   assert.deepEqual(JSON.parse(requests.find(([p])=>p==='/analyses/remove')[1].body).analysis_ids,selected);
   assert.match(markup(),/Nessuna analisi da mostrare/);
   await click({page:'dashboard'});
-  assert.match(markup(),/Automazione Serie A/);
+  assert.match(markup(),/Automazione Serie A \/ Premier League/);
   assert.match(markup(),/role="switch" aria-checked="false"/);
   contracts['/automation']={...contracts['/data-pipeline'].timing_comparison.control,enabled:true};
   await click({action:'automation-toggle'});

@@ -2,6 +2,7 @@ database_url: sqlite:///data/888-real.db
 timing_comparison_enabled: false
 timing_comparison_competitions:
 - 888it:competition:1000095001
+- 888it:competition:1000094985
 batch_ranking:
   probability_weight: 15
   price_coherence_weight: 10
@@ -21,7 +22,7 @@ batch_ranking:
   max_concurrency: 2
 active_competitions:
 - 888it:competition:1000095001
-- 888it:competition:1000095002
+- 888it:competition:1000094985
 result_provider_priority:
 - football_data_org
 - free_football

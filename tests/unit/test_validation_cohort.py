@@ -553,4 +553,9 @@ def test_hidden_cohort_rows_do_not_remove_history_or_change_validator_counts():
     assert service.states() == states
     assert {k:v for k,v in before.items() if k not in {'matches', 'hidden_matches'}} == {k:v for k,v in after.items() if k not in {'matches', 'hidden_matches'}}
     assert service.report() == after
+    with repository.engine.begin() as conn:
+        repository._append(conn, 'annotations', identifier='cohort-restored:demo-match', entity_id='cohort:hidden:v1', match_id='demo-match', payload={'kind': 'RESTORED', 'match_id': 'demo-match', 'at': NOW.isoformat()})
+    assert len(service.report()['matches']) == 2
+    assert service.report()['hidden_matches'] == 0
+    assert service.states() == states
     repository.close()

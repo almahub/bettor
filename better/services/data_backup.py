@@ -26,10 +26,46 @@ from better.services.credential_store import (
 MAX_ARCHIVE = 1024 ** 3
 MAX_EXPANDED = 4 * 1024 ** 3
 ROOT_FILES = {'.env', '.env.dpapi', 'credentials.dpapi'}
+BACKUPS_TO_KEEP = 6
 
 
 class BackupError(ValueError):
     pass
+
+
+def prune_backups(home, *, keep=BACKUPS_TO_KEEP):
+    """Prune only recognized local archives after a new backup was verified."""
+    if keep < 1:
+        raise ValueError('Conservare almeno un backup')
+    folder = (Path(home).resolve() / 'backups').resolve()
+    archives = []
+    for path in sorted(folder.glob('Better-Backup-*.zip'), reverse=True):
+        if path.is_symlink() or path.resolve().parent != folder or not path.is_file():
+            continue
+        try:
+            with zipfile.ZipFile(path) as archive:
+                info = archive.getinfo('manifest.json')
+                if info.file_size > 16 * 1024 ** 2:
+                    continue
+                manifest = json.loads(archive.read(info))
+                if manifest.get('application') != 'Better' or manifest.get('format') != 1:
+                    continue
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile):
+            continue
+        try:
+            created = datetime.fromisoformat(manifest['created_at']).timestamp()
+        except (KeyError, TypeError, ValueError):
+            continue
+        archives.append((created, path))
+    removed = []
+    archives.sort(key=lambda item: (item[0], item[1].name), reverse=True)
+    for _, path in archives[keep:]:
+        try:
+            path.unlink()
+            removed.append(path.name)
+        except OSError:
+            pass  # An archive currently being downloaded is retained.
+    return removed
 
 
 def allowed(name):
@@ -60,7 +96,7 @@ def create_backup(home):
     home = Path(home).resolve()
     folder = home / 'backups'
     folder.mkdir(parents=True, exist_ok=True)
-    name = 'Better-Backup-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + uuid4().hex[:8] + '.zip'
+    name = 'Better-Backup-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f') + '-' + uuid4().hex[:8] + '.zip'
     destination = folder / name
     with tempfile.TemporaryDirectory(prefix='better-backup-', dir=folder) as temporary:
         stage = Path(temporary)
@@ -119,6 +155,7 @@ def create_backup(home):
             os.replace(temporary_zip, destination)
         finally:
             temporary_zip.unlink(missing_ok=True)
+    prune_backups(home)
     return destination
 
 

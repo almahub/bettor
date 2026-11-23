@@ -114,6 +114,17 @@ async def test_daily_filter_has_exclusive_date_to_and_utc_conversion():
         )  # never uses caller as_of as retrieval time
 
 
+async def test_daily_result_identity_ignores_adjacent_utc_boundary_fixture():
+    requested = native_match(utcDate="2026-09-28T19:00:00Z")
+    adjacent = native_match(id=999, utcDate="2026-09-29T00:00:00Z")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"matches": [requested, adjacent]}))) as client:
+        provider = FootballDataOrgFixtureProvider(settings(), client=client, clock=lambda: NOW)
+        rows = await provider.list_fixture_records(datetime(2026, 9, 28).date())
+        assert len(rows) == 1 and rows[0].provider_match_id == requested["id"]
+        assert provider.latest_record("football-data:match:999") is None
+
+
 async def test_cache_does_not_renew_original_timestamp_and_expires():
     clock = [NOW]
     calls = 0
@@ -300,7 +311,7 @@ async def test_unknown_opponents_not_invented_and_finished_excluded_from_fixture
     "items",
     [
         [native_match(), native_match()],
-        [native_match(), native_match(id=124, utcDate="2026-09-29T19:00:00Z")],
+        [native_match(), native_match(id=124, utcDate="2026-09-30T19:00:00Z")],
         [native_match(homeTeam={"id": None, "name": None}), native_match()],
     ],
 )

@@ -245,9 +245,9 @@ def test_888_profile_keeps_local_sources_and_limits_manual_api_football_access()
     assert config.providers["odds"].primary == "sport_888"
     assert config.providers["football_stats"].primary == "free_football"
     assert config.providers["lineups"].primary == "free_football"
-    assert config.api_football.network_enabled is True
+    assert config.api_football.network_enabled is False
     assert config.api_football.daily_request_budget == 90
     assert config.api_football.results_enabled is False
-    assert set(config.sport_888.allowed_competitions) == {1000095001, 1000095002}
+    assert set(config.sport_888.allowed_competitions) == {1000095001, 1000094985}
     assert config.external_research.enabled is True
     assert config.external_research.research_primary_source is False

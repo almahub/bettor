@@ -199,12 +199,13 @@ def mount_dashboard(app, runtime, check_rate_limit):
             raise HTTPException(422, str(error)) from error
 
     @app.get("/archive/football/standings")
-    async def football_standings():
+    async def football_standings(competition_id: int = Query(default=2019, ge=1)):
         repo = runtime().repository
-        checks = repo.list_records("annotations", last=1, entity_id="football-data:standings:football-data:competition:2019:checks")
+        entity = f"football-data:standings:football-data:competition:{competition_id}"
+        checks = repo.list_records("annotations", last=1, entity_id=entity + ":checks")
         if not checks:
             return {"status": "NOT_AVAILABLE", "reason": "FOOTBALL_DATA_ORG_API_KEY richiesta; classifiche non ancora acquisite"}
-        content = repo.all_records("annotations", entity_id="football-data:standings:football-data:competition:2019")
+        content = repo.all_records("annotations", entity_id=entity)
         matching = next((r for r in content if "football-data:standings-content:" + canonical_hash(r) == checks[0]["content_id"]), None)
         return {"status": "AVAILABLE", "acquired_at": checks[0]["acquired_at"], "data": matching}
 
@@ -283,6 +284,8 @@ def mount_dashboard(app, runtime, check_rate_limit):
         report = DataPipelineService(runtime().repository, settings=runtime().settings).report()
         collector = getattr(app.state, "data_pipeline_collector", None)
         report["collector"] = collector.status() if collector else {"status": "STOPPED", "active": False, "healthy": False}
+        if report['collector']['status'] in {'DEGRADED', 'STALE', 'RESTORE_PENDING'}:
+            report['status'] = report['collector']['status']
         return report
 
     @app.post("/data-pipeline/collect-due")
@@ -445,12 +448,24 @@ def mount_dashboard(app, runtime, check_rate_limit):
         from better.providers.free_football import FreeFootballProvider
         from better.services.local_environment import environment_value
         free = find_provider(FreeFootballProvider)
-        standings_checks = engine.repository.list_records(
-            "annotations", last=1,
-            entity_id="football-data:standings:football-data:competition:2019:checks",
-        )
-        standings_check = next(iter(standings_checks), None)
+        from better.providers.free_football import DIVISIONS
+        from better.providers.results import FootballDataOrgResultProvider
+        results = getattr(engine.providers.results, "providers", ())
+        result_source = next((p for p in results if isinstance(p, FootballDataOrgResultProvider)), None)
+        data_competitions = []
+        for source_id, target in (result_source.competitions.items() if result_source else ()):
+            checks = engine.repository.list_records("annotations", last=1,
+                entity_id="football-data:standings:" + target + ":checks")
+            check = next(iter(checks), {})
+            division = free.settings.competitions.get(source_id) if free else None
+            data_competitions.append({"competition": DIVISIONS[division][0] if division in DIVISIONS else source_id,
+                "competition_id": int(target.rsplit(":", 1)[1]), "source_competition_id": source_id,
+                "acquired_at": check.get("acquired_at"), "source_url": check.get("source_url")})
+        latest_check = max((r for r in data_competitions if r["acquired_at"]),
+                           key=lambda r: r["acquired_at"], default={})
+        from better.services.api_control import APIControlService
         from better.services.installation_status import installation_status
+        from better.services.openai_credit import OpenAICredit
         return {
             "is_demo": is_demo,
             "installation": installation_status(engine) if not is_demo else None,
@@ -459,19 +474,23 @@ def mount_dashboard(app, runtime, check_rate_limit):
             "api_football": api_football.describe() if api_football else None,
             "football_data_org": {
                 "configured": bool(environment_value("FOOTBALL_DATA_ORG_API_KEY")),
-                "status": "ACQUIRED" if standings_check else "NOT_VERIFIED",
-                "competition": "Serie A", "competition_id": 2019, "code": "SA",
-                "acquired_at": standings_check.get("acquired_at") if standings_check else None,
-                "source_url": standings_check.get("source_url") if standings_check else None,
+                "status": "ACQUIRED" if latest_check else "NOT_VERIFIED",
+                "competitions": data_competitions,
+                "acquired_at": latest_check.get("acquired_at"),
+                "source_url": latest_check.get("source_url"),
             },
             "free_football": {
                 "enabled": True, "competitions": list(free.settings.competitions.values()),
                 "football_data_org_configured": bool(environment_value("FOOTBALL_DATA_ORG_API_KEY")),
                 "openfootball_divisions": list(free.settings.openfootball_divisions),
+                "csv_divisions": list(free.settings.csv_divisions),
                 "csv_files": len(free.settings.csv_files),
                 "last_refresh": free.last_refresh or next(iter(engine.repository.list_records("annotations", last=1, entity_id="free-football:refresh")), None),
             } if free else None,
             "fixture_source": "888sport_it" if is_888 else "synthetic" if is_demo else "configured",
+            "active_competitions": list(engine.settings.active_competitions),
+            "openai_credit": OpenAICredit(engine.repository).report(
+                APIControlService(repository=engine.repository)._local_calls(None, include_archived=True)),
             "catalog_hours": engine.providers.fixtures.settings.catalog_hours if is_888 else None,
             "competition_names": engine.providers.fixtures.competition_names() if is_888 else {},
             "missing_sources": [

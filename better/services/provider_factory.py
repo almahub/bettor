@@ -159,7 +159,8 @@ def build_providers(settings, missing, *, repository=None):
             # Result identity is independent from the configured pre-match fixture source.
             result_sources.append(
                 FootballDataOrgResultProvider(FootballDataOrgFixtureProvider(), owns_fixture_provider=True,
-                                             competitions=config.football_data_org_competitions)
+                                             competitions=config.football_data_org_competitions,
+                                             team_aliases=config.free_football.team_aliases)
             )
         if config.free_football.enabled:
             free = resolve("free_football")

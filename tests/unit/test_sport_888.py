@@ -170,7 +170,7 @@ async def test_catalogue_rejects_foreign_fixture_with_misleading_italian_label()
     assert p.catalog_metadata["competition_bindings"] == {2000079608: r"^Serie C.*Girone B$"}
 
 
-async def test_operational_catalogue_admits_verified_serie_a_b_groups_only():
+async def test_operational_catalogue_admits_verified_serie_a_premier_groups_only():
     config = SourceConfiguration.load(Path(__file__).parents[2] / "config/888/sources.yaml")
     source = event()
     fixtures = []
@@ -178,6 +178,8 @@ async def test_operational_catalogue_admits_verified_serie_a_b_groups_only():
         (123, 1000095001, "Serie A"),
         (124, 1000095002, "Serie B"),
         (125, 2000063156, "Serie B"),
+        (126, 1000094985, "Premier League"),
+        (127, 2000065086, "Premier League"),
     ):
         row = copy.deepcopy(source)
         row.update(id=identifier, groupId=group_id, group=group)
@@ -189,10 +191,10 @@ async def test_operational_catalogue_admits_verified_serie_a_b_groups_only():
 
     assert {match.match_id for match in matches} == {
         "888it:match:123",
-        "888it:match:124",
+        "888it:match:126",
     }
     assert config.api_football.competitions["888it:competition:1000095001"].league == 135
-    assert config.api_football.competitions["888it:competition:1000095002"].league == 136
+    assert config.api_football.competitions["888it:competition:1000094985"].league == 39
 
 
 async def test_http_age_and_cache_never_rejuvenate_quotes():

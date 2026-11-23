@@ -29,3 +29,22 @@ def test_multiple_automation_requires_reviewed_plan_and_same_origin(monkeypatch)
         assert not repo.all_records('bet_slips')
         assert not repo.all_records('annotations', entity_id='bank:EUR:v1')
     repo.close()
+
+
+def test_explicit_preparation_settings_are_protected_and_never_place(monkeypatch):
+    monkeypatch.setenv('BETTER_PIPELINE_AUTO_COLLECT', 'false')
+    repo = Repository('sqlite:///:memory:')
+    runtime = make_application(repository=repo, settings=Settings(analysis_requests_per_minute=100),
+                               providers=make_demo_bundle('bet'))
+    body = {'request_id': str(uuid4()), 'preparation_enabled': False, 'style': 'SYSTEM', 'budget_eur': '50'}
+    with TestClient(create_app(runtime)) as client:
+        assert client.post('/salabet/automatic-multiples/preparation', json=body,
+                           headers={'Origin': 'https://evil.example'}).status_code == 403
+        assert client.post('/salabet/automatic-multiples/preparation', json={**body, 'preparation_enabled': 'yes'}).status_code == 422
+        result = client.post('/salabet/automatic-multiples/preparation', json=body)
+        assert result.status_code == 200
+        assert result.json()['style'] == 'SYSTEM' and not result.json()['confirmation_enabled']
+        assert client.post('/salabet/automatic-multiples/preparation', json=body).status_code == 200
+        assert not repo.all_records('bet_slips')
+        assert not repo.all_records('annotations', entity_id='bank:EUR:v1')
+    repo.close()

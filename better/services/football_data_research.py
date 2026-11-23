@@ -21,6 +21,7 @@ from better.domain.provenance import Provenance
 from better.domain.research import ResearchProviderFailure, ResearchRunStatus
 from better.providers.research import OpenAIFootballDataResearchProvider
 from better.services.local_environment import environment_value
+from better.services.singleflight import SingleFlight
 from better.storage.repository import canonical_hash
 
 FOOTBALL_DATA_FIELDS = (
@@ -89,6 +90,7 @@ class FootballDataResearchService:
         self.metrics = metrics
         self.clock = clock or (lambda: datetime.now(UTC))
         self._cache = {}
+        self._singleflight = SingleFlight()
 
     def supports(self, competition):
         lowered = competition.strip().casefold()
@@ -121,6 +123,18 @@ class FootballDataResearchService:
     async def research(self, match, as_of, *, requested_fields=None, cache_only=False):
         fields = tuple(field for field in self.settings.fields
                        if requested_fields is None or field in requested_fields)
+        key = (match.match_id, match.season, int(as_of.timestamp()) // self.settings.recent_form_ttl_seconds,
+               fields, cache_only)
+        async def operation():
+            return await self._research(match, as_of, requested_fields=fields, cache_only=cache_only)
+        result = await self._singleflight.run(key, operation)
+        if result is not None and result.as_of > as_of:
+            return await self._singleflight.run((*key, as_of.isoformat()), operation)
+        return result
+
+    async def _research(self, match, as_of, *, requested_fields=None, cache_only=False):
+        fields = tuple(field for field in self.settings.fields
+                       if requested_fields is None or field in requested_fields)
         if not fields:
             raise ValueError("No configured football-data fields requested")
         now = self.clock()
@@ -132,7 +146,7 @@ class FootballDataResearchService:
                 as_of,
                 FootballDataRunStatus.OUT_OF_SCOPE,
                 now,
-                "Unsupported competition; Serie A/B/C only",
+                "Competizione non inclusa nei campionati configurati per la ricerca quantitativa",
                 fields=fields,
             )
         if self.provider is None:
@@ -289,7 +303,7 @@ def _metrics(matches):
     }
 
 
-def missing_model_research_fields(snapshot, minimum):
+def missing_model_research_fields(snapshot, minimum, *, as_of=None, ttl_seconds=None):
     """Only recover observations the current statistics adapter can consume.
 
     Opponent strength / tactical traits are not researchable quantitative fields.
@@ -297,16 +311,34 @@ def missing_model_research_fields(snapshot, minimum):
     """
     if snapshot is None:
         return ("recent_form",)
+    if as_of is not None and ttl_seconds is not None and (as_of - snapshot.captured_at).total_seconds() > ttl_seconds:
+        return ("recent_form",)
     if any(team.sample_size < minimum or not {"last_5", "last_10", "home", "away"} <= team.segments.keys()
            for team in (snapshot.home, snapshot.away)):
         return ("recent_form",)
     return ()
 
 
-def merge_football_stats(existing, recovered):
+def merge_football_stats(existing, recovered, *, as_of=None, ttl_seconds=None):
     if recovered is None:
         return existing
     if existing is None:
+        return recovered
+    for side in ('home', 'away'):
+        known = {(r.kickoff, r.opponent_name.casefold(), r.venue): (r.goals_for, r.goals_against)
+                 for r in getattr(existing, side).recent_matches}
+        if any((r.kickoff, r.opponent_name.casefold(), r.venue) in known
+               and known[r.kickoff, r.opponent_name.casefold(), r.venue] != (r.goals_for, r.goals_against)
+               for r in getattr(recovered, side).recent_matches):
+            return existing
+    if (as_of is not None and ttl_seconds is not None
+            and (as_of - existing.captured_at).total_seconds() > ttl_seconds
+            and 0 <= (as_of - recovered.captured_at).total_seconds() <= ttl_seconds
+            and existing.match_id == recovered.match_id
+            and existing.home.team_id == recovered.home.team_id
+            and existing.away.team_id == recovered.away.team_id):
+        # Replace stale aggregates with actually reacquired evidence, including
+        # equal-sized rolling samples. Never relabel old optional statistics.
         return recovered
     changed = False
     teams = {}

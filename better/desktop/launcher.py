@@ -64,6 +64,8 @@ def backup_databases(home):
 
 class InstanceLock:
     def __init__(self, identity, kind="backend"):
+        self.account_identity = identity
+        self.kind = kind
         self.handle = None
         self.acquired = True
         if sys.platform == "win32":

@@ -84,3 +84,18 @@ test('expired research credentials have a precise cause without a generic auth d
   assert.ok(causes.some(c=>c.code==='OPENAI_KEY_EXPIRED'&&c.label==='Chiave OpenAI scaduta'));
   assert.ok(!causes.some(c=>c.code==='OPENAI_AUTH_ERROR'));
 });
+import {decisionBlockers, dependentGate} from '../../better/web/ui.mjs';
+
+test('NO BET shows measured blockers and distinguishes available prices from missing prices', () => {
+  const run = {decision:{decision_trace:['MODEL_VALIDITY','DATA_QUALITY'].map(gate=>({gate,status:'FAIL'}))},
+    forecast:{markets:[{method:'RAW_POISSON',validation_sample_size:22,validation_minimum:200}]},
+    input_manifest:{resolved_config:{minimum_data_quality:0.75}},
+    results:{football_data_analyst:{data_quality:{source_reliability:0.45}},
+      value_bettor:{payload:{candidates:[],indicative_candidates:[{}]}},
+      football_odds_analyst:{status:'OK',payload:{quotes:[{}]}}}};
+  assert.deepEqual(decisionBlockers(run), ['Validator 22/200','Affidabilità fonti insufficiente (45%, minimo 75%)']);
+  const gate = {gate:'PRICE_FRESHNESS',status:'FAIL'};
+  assert.equal(dependentGate(gate,run),true);
+  run.results.football_odds_analyst.payload.quotes=[];
+  assert.equal(dependentGate(gate,run),false);
+});

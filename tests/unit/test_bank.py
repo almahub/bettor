@@ -313,3 +313,16 @@ def test_bank_api_records_without_bookmaker_execution_and_checks_origin():
         assert result.status_code == 200
         assert Decimal(result.json()["available"]) == 100
     repository.close()
+
+
+def test_account_peak_is_separate_from_betting_risk_after_deposit_and_loss(bank):
+    initialize(bank)
+    bank.deposit(BankTransfer(request_id=uuid4(),amount='100'))
+    request = bet('50')
+    bank.record_bet(request,MATCH)
+    bank.clock = lambda:NOW+timedelta(hours=3)
+    state = bank.settle(request.request_id,BankSettlement(request_id=uuid4(),result='LOST'))
+    assert Decimal(state['equity_peak']) == 200
+    assert state['equity_drawdown'] == .25
+    assert state['drawdown'] == .5
+    assert state['drawdown_basis'] == 'BETTING_PL_EXCLUDING_TRANSFERS'

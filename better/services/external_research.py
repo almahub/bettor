@@ -19,6 +19,7 @@ from better.domain.research import (
 )
 from better.providers.research import OpenAIExternalResearchProvider
 from better.services.local_environment import environment_value
+from better.services.singleflight import SingleFlight
 from better.storage.repository import canonical_hash
 
 
@@ -205,6 +206,7 @@ class ExternalResearchService:
         self.metrics = metrics
         self.clock = clock or (lambda: datetime.now(UTC))
         self._cache = {}
+        self._singleflight = SingleFlight()
 
     def describe(self):
         missing = []
@@ -235,6 +237,19 @@ class ExternalResearchService:
         }
 
     async def research_missing(self, match, *, as_of, missing_fields, source_state_version, cache_only=False):
+        fields = tuple(dict.fromkeys(missing_fields))
+        ttl = min((p.ttl_seconds for name, p in self.settings.fields.items() if name in fields), default=60)
+        key = (match.match_id, getattr(match, 'season', None), int(as_of.timestamp()) // ttl,
+               tuple(sorted(fields)), source_state_version, cache_only)
+        async def operation():
+            return await self._research_missing(match, as_of=as_of, missing_fields=fields,
+                source_state_version=source_state_version, cache_only=cache_only)
+        result = await self._singleflight.run(key, operation)
+        if result is not None and result.as_of > as_of:
+            return await self._singleflight.run((*key, as_of.isoformat()), operation)
+        return result
+
+    async def _research_missing(self, match, *, as_of, missing_fields, source_state_version, cache_only=False):
         fields = tuple(
             field
             for field in dict.fromkeys(missing_fields)

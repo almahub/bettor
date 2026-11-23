@@ -112,3 +112,23 @@ async def test_system_two_schema_repair_bounded_and_hostile_text_is_data():
     assert error.value.detail.code == ErrorCode.SCHEMA_ERROR
     assert len(transport.calls) == 2
     assert all(hostile == call["data"] and hostile not in call["system"] for call in transport.calls)
+
+
+async def test_timeout_and_open_circuit_identify_provider_and_recover():
+    import asyncio
+
+    breaker = CircuitBreaker(threshold=1, recovery_seconds=30)
+    executor = ProviderExecutor(timeout=.01, retries=0, breaker=breaker, source='test-feed', rate_per_second=10000)
+    async def slow():
+        await asyncio.sleep(.05)
+    with pytest.raises(BetterError) as first:
+        await executor.call(slow)
+    assert first.value.detail.source == 'test-feed'
+    with pytest.raises(BetterError) as second:
+        await executor.call(slow)
+    assert second.value.detail.source == 'test-feed' and 'retry after' in str(second.value)
+    breaker.opened_at -= 31
+    async def fast():
+        return 'ok'
+    assert await executor.call(fast) == 'ok'
+    assert breaker.opened_at is None

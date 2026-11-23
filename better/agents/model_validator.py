@@ -25,6 +25,7 @@ class ModelValidator(BaseAgent):
         for entry in context.validation_history:
             if (
                 entry.settled_at <= context.as_of
+                and entry.competition == context.match.competition
                 and entry.market in context.requested_markets
                 and entry.source_type == "LIVE_FORWARD"
             ):

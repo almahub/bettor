@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from better.config import Settings
+from better.domain.enums import SourceType
 from better.domain.errors import BetterError
 from better.domain.models import Match
 from better.providers.api_football import APIFootballProvider, APIFootballSettings
@@ -144,6 +145,69 @@ async def test_free_stats_are_local_only_and_exclude_future_results(repo):
     await provider.close()
 
 
+async def test_reacquired_equal_scores_refresh_evidence_without_promoting_source(repo):
+    provider, calls = make_provider(repo)
+    provider.fixtures.get_match.return_value = MATCH.model_copy(update={'kickoff': NOW + timedelta(days=1)})
+    observations = [row(kickoff=(NOW - timedelta(days=i+1)).isoformat()) for i in range(10)]
+    old = NOW - timedelta(days=2)
+    provider.save_rows(observations, 'https://old.test/results', old)
+    read = provider.rows
+
+    def archived(as_of, **kwargs):
+        return [{**r, 'source_tier': 'B' if r['source_url'].startswith('https://old.test') else 'C'}
+                for r in read(as_of, **kwargs)]
+
+    provider.rows = archived
+    assert (await provider.get_stats(MATCH.match_id, NOW)).captured_at == old
+    provider.save_rows(observations, 'https://fresh.test/results', NOW)
+    snapshot = await provider.get_stats(MATCH.match_id, NOW)
+    assert {p.reliability_tier.value for p in snapshot.provenance if p.field == "recent_results"} == {"B"}
+    assert snapshot.captured_at == NOW
+    assert snapshot.home.sample_size == snapshot.away.sample_size == 10
+    assert {p.reliability_tier.value for p in snapshot.provenance} == {'B', 'C'}
+    assert all(p.reliability_tier.value == 'C' for p in snapshot.provenance if 'fresh.test' in str(p.url))
+    assert (await provider.get_stats(MATCH.match_id, NOW - timedelta(seconds=1))).captured_at == old
+    provider.save_rows([row(home_score=9)], 'https://conflict.test/results', NOW)
+    with pytest.raises(BetterError, match='Conflitto'):
+        await provider.get_stats(MATCH.match_id, NOW)
+    assert not calls
+    await provider.close()
+
+
+async def test_current_completed_provider_results_are_saved_without_duplicate_content(repo):
+    provider, _ = make_provider(repo)
+    result = SimpleNamespace(competition_id='football-data:competition:2019', status='FINISHED',
+        score_duration='REGULAR', match=MATCH, full_time_home=2, full_time_away=1,
+        last_updated=NOW, provenance=SimpleNamespace(source_id='football-data:match:1',
+            source_type=SourceType.API, raw_reference='fixture-hash'))
+    native = SimpleNamespace(_request=AsyncMock(return_value=({'matches': [{}]}, NOW, {},
+        'https://api.football-data.org/v4/competitions/2019/matches?season=2026&status=FINISHED')),
+        _normalize=lambda *args, **kwargs: result)
+    provider.football_data_org = SimpleNamespace(fixture_provider=native,
+        competitions={'888:a': 'football-data:competition:2019'})
+    await provider.refresh_football_data_results()
+    await provider.refresh_football_data_results()
+    assert len(provider.rows(NOW)) == 1
+    assert provider.rows(NOW)[0]["source_tier"] == "B"
+    assert provider.rows(NOW)[0]["published_at"] == NOW.isoformat()
+    assert provider.rows(NOW)[0]["raw_reference"] == "fixture-hash"
+    assert len(repo.all_records('annotations')) == 2
+    result.competition_id = 'football-data:competition:2000'
+    with pytest.raises(ValueError, match='competition/season'):
+        await provider.refresh_football_data_results()
+    assert not repo.all_records('match_results')
+    await provider.close()
+
+
+async def test_archive_refresh_uses_latest_check_and_does_not_repeat_network(repo):
+    provider, calls = make_provider(repo)
+    provider._append('free-football:refresh', {'at': (NOW - timedelta(days=2)).isoformat()})
+    provider._append('free-football:refresh', {'at': (NOW - timedelta(minutes=1)).isoformat()})
+    assert await provider.refresh_archive() == {'status': 'CACHED', 'requests': 0}
+    assert not calls
+    await provider.close()
+
+
 async def test_api_football_network_disabled_even_with_key(repo):
     from pydantic import SecretStr
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: pytest.fail('network called')))
@@ -221,3 +285,17 @@ async def test_disabled_competition_cannot_start_new_analysis_or_enrollment(repo
     assert result['reason'] == 'COMPETITION_DISABLED'
     assert not repo.all_records('analysis_runs')
     await runtime.close()
+
+
+async def test_schedule_and_scored_import_are_one_identity_but_score_conflicts_remain(repo):
+    provider, _ = make_provider(repo)
+    provider.save_rows([row(home_score=None, away_score=None)], 'https://schedule.test', NOW)
+    provider.save_rows([row()], 'https://results.test', NOW)
+    resolver = DeterministicResultIdentityResolver(repo, provider)
+    result = await resolver.resolve(MATCH, NOW)
+    assert result.verified and result.candidate_count == 1
+    assert (await provider.get_result(result.identity, NOW)).final_status == 'FINAL'
+    provider.save_rows([row(home_score=4)], 'https://conflict.test', NOW)
+    assert len(await provider.find_candidates(MATCH, NOW)) == 2
+    assert (await provider.get_result(result.identity, NOW)).final_status == 'CONFLICT'
+    await provider.close()

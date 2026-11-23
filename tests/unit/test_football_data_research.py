@@ -388,7 +388,7 @@ async def test_football_data_cache_is_reused_after_service_restart():
     repository.close()
 
 
-@pytest.mark.parametrize("missing_stats", [False, True])
+@pytest.mark.parametrize("missing_stats", [False, True, "stale"])
 @pytest.mark.parametrize("lookup_only", [False, True])
 async def test_normal_analysis_researches_statistics_only_when_missing(missing_stats, lookup_only, monkeypatch):
     from unittest.mock import AsyncMock
@@ -400,7 +400,10 @@ async def test_normal_analysis_researches_statistics_only_when_missing(missing_s
     now = datetime.now(UTC)
     bundle = make_demo_bundle("bet", as_of=now)
     match = bundle.fixtures.match
-    if missing_stats:
+    if missing_stats == "stale":
+        original = await bundle.stats.get_stats(match.match_id, now)
+        monkeypatch.setattr(bundle.stats, "get_stats", AsyncMock(return_value=original.model_copy(update={"captured_at": now - timedelta(days=3)})))
+    elif missing_stats:
         monkeypatch.setattr(bundle.stats, "get_stats", AsyncMock(side_effect=BetterError(ErrorCode.MISSING_DATA, "missing")))
     repository = Repository("sqlite:///:memory:")
     provider = FakeFootballDataResearchProvider(error=ResearchProviderFailure(ResearchRunStatus.RESEARCH_TIMEOUT, "timeout"))
@@ -417,6 +420,6 @@ async def test_normal_analysis_researches_statistics_only_when_missing(missing_s
             await MatchResearchService(app).inspect(match.match_id)
         else:
             await app.analyze(AnalysisRequest(match_id=match.match_id))
-        assert len(provider.calls) == int(missing_stats)
+        assert len(provider.calls) == int(bool(missing_stats))
     finally:
         await app.close()

@@ -67,7 +67,8 @@ class Sport888Provider:
         self.client = client or httpx.AsyncClient(timeout=self.settings.timeout_seconds)
         self._owned_client = client is None
         self.clock = clock or (lambda: datetime.now(UTC))
-        self.executor = ProviderExecutor(timeout=self.settings.timeout_seconds, retries=1, rate_per_second=2)
+        self.executor = ProviderExecutor(timeout=self.settings.timeout_seconds, retries=1, rate_per_second=2,
+                                         source=PROVIDER)
         self._cache = {}
         self._records = {}
         self._lock = asyncio.Lock()

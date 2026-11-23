@@ -36,7 +36,32 @@ export const agentGroups = [
   {name:'04 · Decisione e traccia',ids:['professional_bettor','betting_journal']},
 ];
 export const gateNames = {CONTEXT_INTEGRITY:'Identità e riferimento temporale',DATA_QUALITY:'Qualità dei dati',EVIDENCE_PROVENANCE:'Provenienza delle evidenze',MODEL_VALIDITY:'Validità del modello',MARKET:'Mercato supportato',NUMERICAL_CONSISTENCY:'Coerenza dei calcoli',PRICE_FRESHNESS:'Freschezza della quota',VALUE:'Edge e valore atteso',CONTRARIAN:'Verifica contraria',RISK:'Rischio ed esposizione',TIMING:'Timing e formazioni',CONFIDENCE:'Affidabilità dell’analisi'};
+export function decisionBlockers(run) {
+  const trace = run?.decision?.decision_trace || [];
+  const failed = name => trace.some(g => g.gate === name && g.status === 'FAIL');
+  const reasons = [];
+  const models = (run?.forecast?.markets || []).filter(m => m.method === 'RAW_POISSON' &&
+    m.validation_minimum > 0 && m.validation_sample_size != null && m.validation_sample_size < m.validation_minimum);
+  if (failed('MODEL_VALIDITY') && models.length) {
+    const samples = [...new Set(models.map(m => `${m.validation_sample_size}/${m.validation_minimum}`))];
+    reasons.push(`Validator ${samples.join(', ')}`);
+  }
+  const reliability = run?.results?.football_data_analyst?.data_quality?.source_reliability;
+  const minimum = run?.input_manifest?.resolved_config?.minimum_data_quality;
+  if (failed('DATA_QUALITY') && reliability != null && minimum != null && reliability < minimum)
+    reasons.push(`Affidabilità fonti insufficiente (${percent(reliability,0)}, minimo ${percent(minimum,0)})`);
+  return reasons;
+}
+export function dependentGate(gate, run) {
+  const results = run?.results;
+  const value = results?.value_bettor?.payload;
+  if (gate.status !== 'FAIL' || value?.candidates?.length !== 0 || !value.indicative_candidates?.length) return false;
+  if (gate.gate === 'PRICE_FRESHNESS') return results.football_odds_analyst?.status === 'OK' && !!results.football_odds_analyst.payload?.quotes?.length;
+  if (gate.gate === 'RISK') return results.risk_manager?.payload?.reasons?.every(r => r === 'MODEL_VALIDATION_INSUFFICIENT') && results.risk_manager.payload.reasons.length > 0;
+  return ['NUMERICAL_CONSISTENCY','VALUE'].includes(gate.gate);
+}
 export function gateExplanation(gate, run) {
+  if(dependentGate(gate,run)) return 'Il controllo richiede una proposta operativa. Le selezioni disponibili sono indicative.';
   if(gate.status==='PASS')return '';
   const d=run?.decision || {};
   const blocked=(d.degradations || []).some(x=>x.code==='INDICATIVE_PREDICTION_NOT_ADMITTED' && x.applies_to_decision);

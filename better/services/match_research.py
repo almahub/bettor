@@ -49,12 +49,12 @@ class MatchResearchService:
                 merge_football_stats,
                 missing_model_research_fields,
             )
-            missing_stats = missing_model_research_fields(snapshots.get("stats"), self.runtime.settings.min_training_sample)
+            missing_stats = missing_model_research_fields(snapshots.get("stats"), self.runtime.settings.min_training_sample, as_of=now, ttl_seconds=self.runtime.settings.stats_ttl_seconds)
             if football_data_service is not None and missing_stats:
                 from better.services.football_data_research import normalize_football_data
 
                 football_data_result = await football_data_service.research(research_match, now, requested_fields=missing_stats)
-                stats = merge_football_stats(snapshots.get("stats"), normalize_football_data(match, football_data_result))
+                stats = merge_football_stats(snapshots.get("stats"), normalize_football_data(match, football_data_result), as_of=self.clock(), ttl_seconds=self.runtime.settings.stats_ttl_seconds)
                 if stats is not None:
                     snapshots["stats"] = stats
                     failures.pop("stats", None)

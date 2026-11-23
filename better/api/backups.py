@@ -33,7 +33,12 @@ def mount_backups(app, runtime, guard, response):
 
     def idle():
         collector = getattr(app.state, 'data_pipeline_collector', None)
-        if active or (collector and collector.running) or any(lock.locked() for lock in getattr(runtime(), '_locks', {}).values()):
+        shared_research = any(
+            not task.done()
+            for name in ('external_research', 'football_data_research')
+            for task in getattr(getattr(getattr(runtime(), name, None), '_singleflight', None), 'tasks', {}).values()
+        )
+        if active or shared_research or (collector and collector.running) or any(lock.locked() for lock in getattr(runtime(), '_locks', {}).values()):
             raise HTTPException(409, 'Analisi o checkpoint in corso: attendi la conclusione e riprova.')
 
     @app.post('/system/settings/backups/desktop-stop', include_in_schema=False)

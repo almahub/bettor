@@ -163,3 +163,15 @@ def test_failed_replacement_restores_previous_files(tmp_path, monkeypatch):
     assert failed and amount(home) == 99
     assert (home / 'config/888/app.yaml').is_file()
     assert (home / 'restore-pending.json').exists()
+
+
+def test_only_latest_six_verified_backup_archives_remain_on_disk(tmp_path):
+    home = home_at(tmp_path / 'home')
+    created = [create_backup(home) for _ in range(8)]
+    assert len(list((home / 'backups').glob('Better-Backup-*.zip'))) == 6
+    assert created[-1].exists() and not created[0].exists()
+    # A backup staged for restore is outside the rotating filename set.
+    staged = home / 'backups/restore-protected.zip'
+    staged.write_bytes(created[-1].read_bytes())
+    create_backup(home)
+    assert staged.exists()

@@ -20,7 +20,7 @@ async def experiment():
     settings = Settings(timing_comparison_enabled=True, timing_comparison_competitions=('SYNTHETIC_LEAGUE',))
     app = make_application(settings=settings, repository=repo, providers=make_demo_bundle('bet', as_of=NOW))
     original = await app.analyze(AnalysisRequest(match_id='demo-match', as_of=NOW))
-    match = original.snapshot.match.model_copy(update={'kickoff': NOW + timedelta(hours=24)})
+    match = original.snapshot.match.model_copy(update={'kickoff': NOW + timedelta(hours=48)})
     clock = [NOW + timedelta(seconds=2)]
     calls = []
 
@@ -41,7 +41,7 @@ async def experiment():
     repo.close()
 
 
-async def test_t24_candidate_persisted_once_and_no_t30_after_restart(experiment):
+async def test_t48_candidate_persisted_once_and_no_t30_after_restart(experiment):
     service, repo, match, clock, calls, _ = experiment
     before = {t: repo.all_records(t) for t in ('bet_slips','canonical_predictions','validation_observations')}
     bank = repo.all_records('annotations', entity_id='bank:EUR:v1')
@@ -49,7 +49,7 @@ async def test_t24_candidate_persisted_once_and_no_t30_after_restart(experiment)
     assert len(first['captured']) == 1
     assert len(first['transferred']) == 1
     candidate = repo.all_records('bet_candidates')[0]
-    assert candidate['provenance']['automation_checkpoint'] == 'T24'
+    assert candidate['provenance']['automation_checkpoint'] == 'T48'
     await service.collect_due([match.model_dump(mode='json')])
     clock[0] = match.kickoff - timedelta(minutes=29)
     restarted = TimingComparisonService(service.runtime, clock=lambda: clock[0])
@@ -58,7 +58,7 @@ async def test_t24_candidate_persisted_once_and_no_t30_after_restart(experiment)
     assert second['transferred'] == []
     assert calls == [{'cache_only_research': True}]
     assert len(repo.all_records('bet_candidates')) == 1
-    assert set(restarted.view(match.match_id, match.kickoff.isoformat())['checkpoints']) == {'T24'}
+    assert set(restarted.view(match.match_id, match.kickoff.isoformat())['checkpoints']) == {'T48'}
     assert not any(r['checkpoint'] == 'T30' for r in service.rows())
     for table, rows in before.items():
         assert repo.all_records(table) == rows
@@ -71,7 +71,7 @@ async def test_late_start_does_not_recreate_missing_baseline(experiment):
     await service.collect_due([match.model_dump(mode='json')])
     assert not calls
     view = service.view(match.match_id, match.kickoff.isoformat())
-    assert view['checkpoints']['T24']['status'] == 'MISSING'
+    assert view['checkpoints']['T48']['status'] == 'MISSING'
     assert not view['paired']
 
 
@@ -95,17 +95,17 @@ async def test_failed_checkpoint_is_not_retried_or_duplicated(experiment):
     assert len(first['failed']) == 1
     await TimingComparisonService(service.runtime, clock=lambda: clock[0]).collect_due([match.model_dump(mode='json')])
     assert len(calls) == 1
-    assert service.view(match.match_id, match.kickoff.isoformat())['checkpoints']['T24']['status'] == 'FAILED'
+    assert service.view(match.match_id, match.kickoff.isoformat())['checkpoints']['T48']['status'] == 'FAILED'
     assert len([r for r in service.rows() if r['kind'] == 'FAILED']) == 1
 
 
 async def test_crash_claim_is_explicit_and_never_reruns(experiment):
     service, _, match, clock, calls, _ = experiment
-    assert service._claim(match, 'T24')
+    assert service._claim(match, 'T48')
     clock[0] += timedelta(minutes=11)
     await service.collect_due([match.model_dump(mode='json')])
     assert not calls
-    assert service.view(match.match_id, match.kickoff.isoformat())['checkpoints']['T24']['status'] == 'FAILED'
+    assert service.view(match.match_id, match.kickoff.isoformat())['checkpoints']['T48']['status'] == 'FAILED'
 
 
 async def test_postkickoff_future_source_and_window_leakage_rejected(experiment):
@@ -114,21 +114,21 @@ async def test_postkickoff_future_source_and_window_leakage_rejected(experiment)
     source = run.snapshot.stats.provenance[0].model_copy(update={'retrieved_at': match.kickoff})
     stats = run.snapshot.stats.model_copy(update={'provenance': (source,)})
     with pytest.raises(ValueError, match='LEAKAGE'):
-        service.store(match, 'T24', run.model_copy(update={'snapshot': run.snapshot.model_copy(update={'stats': stats})}))
+        service.store(match, 'T48', run.model_copy(update={'snapshot': run.snapshot.model_copy(update={'stats': stats})}))
     clock[0] = match.kickoff
     with pytest.raises(ValueError, match='WINDOW'):
         service.store(match, 'T30', run_at(clock[0]))
     clock[0] = match.kickoff - timedelta(hours=22)
     with pytest.raises(ValueError, match='WINDOW'):
-        service.store(match, 'T24', run_at(clock[0]))
+        service.store(match, 'T48', run_at(clock[0]))
 
 
-async def test_t24_report_has_no_comparison_or_double_validation(experiment):
+async def test_t48_report_has_no_comparison_or_double_validation(experiment):
     service, repo, match, _, _, _ = experiment
     await service.collect_due([match.model_dump(mode='json')])
     report = service.report()
-    assert report['mode'] == 'T24_ONLY'
-    assert report['checkpoints'] == ['T24']
+    assert report['mode'] == 'T48_ONLY'
+    assert report['checkpoints'] == ['T48']
     assert report['metrics'] == []
     assert report['transferred'] == 1
     assert not repo.all_records('validation_observations')
@@ -138,8 +138,8 @@ async def test_capture_before_crash_is_transferred_without_research_again(experi
     service, repo, match, clock, calls, run_at = experiment
     run = run_at(clock[0])
     repo.save_run(run)
-    assert service._claim(match, 'T24')
-    service.store(match, 'T24', run)
+    assert service._claim(match, 'T48')
+    service.store(match, 'T48', run)
     restarted = TimingComparisonService(service.runtime, clock=lambda: clock[0])
     await restarted.collect_due([])
     await restarted.collect_due([])
@@ -151,8 +151,8 @@ async def test_unusable_forecast_is_explicit_and_not_transferred(experiment):
     service, repo, match, clock, _, run_at = experiment
     run = run_at(clock[0]).model_copy(update={'forecast': None})
     repo.save_run(run)
-    assert service._claim(match, 'T24')
-    service.store(match, 'T24', run)
+    assert service._claim(match, 'T48')
+    service.store(match, 'T48', run)
     await service.collect_due([])
     assert not repo.all_records('bet_candidates')
     assert service.report()['not_eligible'][0]['reason'] == 'MODEL_INPUT_INSUFFICIENT'
@@ -200,8 +200,44 @@ async def test_unpreselected_and_probable_lineup_are_not_promoted(experiment):
     run = run_at(clock[0])
     run = run.model_copy(update={'forecast': None, 'snapshot': run.snapshot.model_copy(update={
         'lineups': run.snapshot.lineups.model_copy(update={'status': 'PROBABLE_LINEUP'})})})
-    saved = service.store(match, 'T24', run)
+    saved = service.store(match, 'T48', run)
     assert saved['lineup_status'] == 'PROBABLE_LINEUP'
     clock[0] = match.kickoff - timedelta(minutes=30)
     await service.collect_due([])
     assert calls == []
+
+
+async def test_transient_checkpoint_failure_retries_once_inside_window_after_restart(experiment):
+    from better.domain.enums import ErrorCode
+    from better.domain.errors import BetterError
+    service, repo, match, clock, calls, _ = experiment
+    original = service.runtime.analyze
+    attempted = []
+    async def temporary(request, **options):
+        attempted.append(1)
+        if len(attempted) == 1:
+            raise BetterError(ErrorCode.TIMEOUT, 'transient timeout', source='test')
+        return await original(request, **options)
+    service.runtime.analyze = temporary
+    first = await service.collect_due([match.model_dump(mode='json')])
+    assert first['failed'] and len(attempted) == 1
+    assert service.retry_deadlines() == [clock[0]+timedelta(minutes=1)]
+    await service.collect_due([match.model_dump(mode='json')])
+    assert len(attempted) == 1
+    clock[0] += timedelta(seconds=61)
+    restarted = TimingComparisonService(service.runtime, clock=lambda:clock[0])
+    second = await restarted.collect_due([match.model_dump(mode='json')])
+    assert len(second['captured']) == 1 and len(attempted) == 2
+    await restarted.collect_due([match.model_dump(mode='json')])
+    assert len(attempted) == 2 and len(repo.all_records('bet_candidates')) == 1
+
+
+async def test_interrupted_claim_can_recover_before_cutoff_and_legacy_transfers_are_separate(experiment):
+    service, _, match, clock, calls, _ = experiment
+    assert service._claim(match,'T48')
+    clock[0] += timedelta(minutes=3, seconds=1)
+    second = await TimingComparisonService(service.runtime, clock=lambda:clock[0]).collect_due([match.model_dump(mode='json')])
+    assert len(second['captured']) == 1 and len(calls) == 1
+    service._append('legacy-transfer',{'kind':'TRANSFER','match_id':'old','kickoff':match.kickoff.isoformat(),
+        'checkpoint':'T24','at':clock[0].isoformat(),'candidate_id':'old-candidate'})
+    assert service.report()['transferred'] == 1

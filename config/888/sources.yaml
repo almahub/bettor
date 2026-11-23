@@ -15,23 +15,23 @@ providers:
     primary: free_football
     fallback: null
 sport_888:
-  catalog_hours: 168
+  catalog_hours: 336
   catalog_ttl_seconds: 120
   odds_ttl_seconds: 15
   timeout_seconds: 8
   allowed_competition_patterns:
   - ^Serie A$
-  - ^Serie B$
+  - ^Premier League$
   allowed_competitions:
     1000095001: ^Serie A$
-    1000095002: ^Serie B$
+    1000094985: ^Premier League$
 api_football:
   competitions:
     888it:competition:1000095001:
       league: 135
       season: 2026
-    888it:competition:1000095002:
-      league: 136
+    888it:competition:1000094985:
+      league: 39
       season: 2026
   teams:
     888it:team:1000000185: 777
@@ -50,10 +50,10 @@ api_football:
   - 2024
   archive_leagues:
   - 135
-  - 136
+  - 39
   archive_batch_requests: 4
   archive_daily_requests: 100
-  network_enabled: true
+  network_enabled: false
   results_enabled: false
 sportradar:
   access_level: trial
@@ -138,7 +138,7 @@ football_data_research:
   enabled: true
   supported_competitions:
   - Serie A
-  - Serie B
+  - Premier League
   max_search_calls: 3
   max_tokens: 8000
   max_cost_per_match: '0.25'
@@ -148,13 +148,14 @@ free_football:
   enabled: true
   competitions:
     888it:competition:1000095001: I1
-    888it:competition:1000095002: I2
+    888it:competition:1000094985: E0
   seasons:
   - 2026
   - 2025
   - 2024
   openfootball_divisions:
   - I1
+  - E0
   refresh_seconds: 21600
   csv_files: []
   team_aliases:
@@ -162,5 +163,30 @@ free_football:
     internazionale: inter
     genoa cfc: genoa
     as roma: roma
+    afc bournemouth: bournemouth
+    bournemouth afc: bournemouth
+    brighton hove albion: brighton
+    tottenham hotspur: tottenham
+    hull city afc: hull city
+    sunderland afc: sunderland
+    man city: manchester city
+    man united: manchester united
+    nott m forest: nottingham forest
+    nott forest: nottingham forest
+    newcastle: newcastle united
+    leeds: leeds united
+    ipswich: ipswich town
+    coventry: coventry city
+    hull: hull city
+    tottenham: tottenham
+    west ham: west ham united
+    wolves: wolverhampton wanderers
+    brighton hove: brighton
+    nottingham: nottingham forest
+    leicester: leicester city
+  csv_divisions:
+  - I1
+  - E0
 football_data_org_competitions:
   888it:competition:1000095001: football-data:competition:2019
+  888it:competition:1000094985: football-data:competition:2021

@@ -69,7 +69,7 @@ class BankService:
         )
 
     def _state(self, events):
-        cash = initial = equity = peak = Decimal(0)
+        cash = initial = equity = peak = equity_peak = Decimal(0)
         bets, profit = {}, Decimal(0)
         cancelled = {event["bet_id"] for event in events if event["kind"] == "BET_CANCELLED"}
         for event in events:
@@ -99,6 +99,7 @@ class BankService:
                 profit += gain
                 peak = max(peak, initial + profit)
                 bet.update(status=event["result"], settled_at=event["at"], **{"return": str(paid)})
+            equity_peak = max(equity_peak, equity)
         reserved = sum((Decimal(b["amount"]) for b in bets.values() if b["status"] == "OPEN"), Decimal(0))
         return {
             "initialized": bool(events),
@@ -110,6 +111,10 @@ class BankService:
             "profit": str(profit),
             "peak": str(peak),
             "drawdown": min(1.0, max(0.0, float((peak - initial - profit) / peak))) if peak else 0,
+            "drawdown_basis": "BETTING_PL_EXCLUDING_TRANSFERS",
+            "equity_peak": str(equity_peak),
+            "equity_drawdown": min(1.0, max(0.0, float((equity_peak - equity) / equity_peak))) if equity_peak else 0,
+            "equity_drawdown_basis": "ACCOUNT_BALANCE_INCLUDING_TRANSFERS",
             "bets": [bet for bet in bets.values() if bet["status"] != "CANCELLED"],
             "transfers": [
                 {"kind": event["kind"], "amount": event["amount"], "at": event["at"]}

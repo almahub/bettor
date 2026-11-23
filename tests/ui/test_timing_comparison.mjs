@@ -1,14 +1,14 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 
-test('SalaBet shows only T24 even with historical T30 captures',async()=>{
+test('SalaBet shows only T48 even with historical T30 captures',async()=>{
   const nodes=new Map();const listeners={};const requests=[];
   function node(id){if(!nodes.has(id))nodes.set(id,{innerHTML:'',textContent:'',hidden:true,addEventListener(){}});return nodes.get(id);}
   globalThis.document={querySelector:node,getElementById:node,addEventListener(name,fn){listeners[name]=fn;}};
   globalThis.location={hash:'#candidates'};
   const candidate={id:'c1',analysis_id:'a1',market:'1X2',selection:'HOME',home_team:'Casa',away_team:'Ospiti',competition_id:'SA',kickoff:'2026-11-08T18:00:00Z',model_name:'poisson',model_version:'1.0.0',validation_sample:3,validation_required:200,probability:.6,
     timing_comparison:{enabled:false,verdict:'CHANGED',reason:'Il modello indica una selezione diversa',checkpoints:{
-      T24:{status:'COMPLETED',scheduled_at:'2026-11-07T18:00:00Z',capture:{analysis_id:'a1',as_of:'2026-11-07T18:00:01Z',lineup_status:'PROBABLE_LINEUP',calls:0,cost:0,cost_known:true,markets:[{model:'poisson',version:'1.0.0',market:'1X2',odds:2}]}},
+      T48:{status:'COMPLETED',scheduled_at:'2026-11-07T18:00:00Z',capture:{analysis_id:'a1',as_of:'2026-11-07T18:00:01Z',lineup_status:'PROBABLE_LINEUP',calls:0,cost:0,cost_known:true,markets:[{model:'poisson',version:'1.0.0',market:'1X2',odds:2}]}},
       T30:{status:'DATA_MISSING',scheduled_at:'2026-11-08T17:30:00Z',capture:{analysis_id:'a2',as_of:'2026-11-08T17:31:00Z',lineup_status:'UNKNOWN',calls:0,cost:0,cost_known:true,markets:[]}}
     }}};
   globalThis.fetch=async(path,options)=>{
@@ -19,7 +19,7 @@ test('SalaBet shows only T24 even with historical T30 captures',async()=>{
   };
   await import('../../better/web/salabet.mjs');
   const markup=node('#app').innerHTML;
-  assert.match(markup,/Analisi Serie A T−24/);
+  assert.match(markup,/Analisi Serie A \/ Premier League T−48/);
   assert.match(markup,/Completata/);
   assert.match(markup,/Automazione disattivata/);
   assert.match(markup,/href="\/#analysis\/a1"/);

@@ -83,13 +83,25 @@ class CandidateRefresh:
                 run = self.repo.get_run(selection['analysis_id'])
                 if run and (self.clock() - run.as_of).total_seconds() > self.settings.stats_ttl_seconds:
                     targets.setdefault(run.match_id, run)
+        # Failed refreshes remain visible and can be recovered in later normal
+        # cycles. Use the latest attempted analysis as parent, with the same
+        # shared per-match/day/week budget guard and persistent claim mechanism.
+        desk = SalaBetService(self.repo, clock=self.clock, settings=self.settings)
+        for candidate in desk.list_candidates():
+            review = desk.candidate_review(candidate)
+            if not review or review.get('reason_code') not in {'STATS_STALE', 'ANALYSIS_STALE'}:
+                continue
+            run = self.repo.get_run(review['analysis_id'])
+            if run and run.snapshot.stats is not None and (self.clock() - run.snapshot.stats.captured_at).total_seconds() > self.settings.stats_ttl_seconds:
+                targets.setdefault(run.match_id, run)
         report = {'refreshed': [], 'failed': [], 'waiting': []}
         for match_id, original in targets.items():
-            if not self.owner.policy()['enabled'] or self.owner.execution_status().get('paused'):
+            automation = self.owner.policy()
+            if not (automation['enabled'] or (automation.get('workflow_version') == 2 and automation.get('preparation_enabled'))) or self.owner.execution_status().get('paused'):
                 break
             match = original.snapshot.match
             if (match.competition not in self.settings.timing_comparison_competitions
-                    or not self.clock() < match.kickoff <= self.clock() + timedelta(hours=24)):
+                    or not self.clock() < match.kickoff <= (moment(preview['window_end']) if preview.get('window_end') else self.clock() + timedelta(hours=24))):
                 continue
             key = canonical_hash({'match': match_id, 'kickoff': match.kickoff.isoformat(),
                                   'source_analysis': str(original.analysis_id)})
@@ -135,9 +147,10 @@ class CandidateRefresh:
                                 'sample_size': item['sample_size'], 'score_breakdown': item['score_breakdown'],
                                 'blockers': item['blockers']})
                     # Visibility only: existing slips retain their original immutable selections.
-                    for old_candidate in old:
-                        desk.remove_candidate(old_candidate.id, BetSlipAction(request_id=uuid5(
-                            NAMESPACE_URL, 'refresh-hide:' + key + ':' + str(old_candidate.id))))
+                    if candidate is not None:
+                        for old_candidate in old:
+                            desk.remove_candidate(old_candidate.id, BetSlipAction(request_id=uuid5(
+                                NAMESPACE_URL, 'refresh-hide:' + key + ':' + str(old_candidate.id))))
                     self.owner._write(repo, conn, f'refresh:{key}:done', {
                         'kind': 'DONE', 'key': key, 'match_id': match_id, 'attempt': attempt,
                         'analysis_id': str(run.analysis_id), 'candidate_id': str(candidate.id) if candidate else None,

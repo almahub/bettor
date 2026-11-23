@@ -96,7 +96,7 @@ class Orchestrator:
         football_data = self.football_data_research
         from better.services.football_data_research import merge_football_stats, missing_model_research_fields
 
-        missing_stats = missing_model_research_fields(collected.get("stats"), self.settings.min_training_sample)
+        missing_stats = missing_model_research_fields(collected.get("stats"), self.settings.min_training_sample, as_of=as_of, ttl_seconds=self.settings.stats_ttl_seconds)
         if (request.as_of is None and football_data is not None and football_data.settings.enabled
                 and missing_stats):
             from better.services.football_data_research import normalize_football_data
@@ -107,7 +107,7 @@ class Orchestrator:
                     lambda **options: football_data.research(research_match, as_of, requested_fields=missing_stats, **options))
             else:
                 football_data_result = await football_data.research(research_match, as_of, requested_fields=missing_stats, **research_options)
-            stats = merge_football_stats(collected.get("stats"), normalize_football_data(match, football_data_result)) if football_data_result else collected.get("stats")
+            stats = merge_football_stats(collected.get("stats"), normalize_football_data(match, football_data_result), as_of=datetime.now(timezone.utc), ttl_seconds=self.settings.stats_ttl_seconds) if football_data_result else collected.get("stats")
             if stats is not None:
                 collected["stats"] = stats
                 failures.pop("stats", None)

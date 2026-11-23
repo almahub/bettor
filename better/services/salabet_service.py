@@ -287,6 +287,34 @@ class SalaBetService:
                 candidates.append(candidate)
         return sorted(candidates, key=lambda item: (item.created_at, str(item.id)), reverse=True)
 
+    def candidate_review(self, candidate):
+        """A failed refresh is a visible block, not a manual removal."""
+        from better.config import Settings
+        from better.services.timing_comparison import moment
+        settings = self.settings or Settings()
+        original = self.repository.get_run(candidate.analysis_id)
+        rows = self.repository.all_records('annotations', entity_id='candidate-refresh:v1')
+        failed = next((r for r in rows if r.get('kind') == 'DONE'
+                       and r.get('match_id') == candidate.match_id and not r.get('candidate_id')
+                       and original is not None and moment(r['at']) >= original.as_of), None)
+        run = self.repository.get_run(failed['analysis_id']) if failed else original
+        if run is None:
+            return {'blocked': True, 'reason_code': 'MODEL_INPUT_INSUFFICIENT',
+                    'message': 'Analisi non disponibile', 'analysis_id': str(candidate.analysis_id)}
+        stats = run.snapshot.stats
+        if stats is not None and (self.clock() - stats.captured_at).total_seconds() > settings.stats_ttl_seconds:
+            code, message = 'STATS_STALE', 'Statistiche scadute: aggiornamento necessario'
+        elif failed:
+            code, message = failed.get('reason') or 'RESEARCH_FAILED', 'Ultimo aggiornamento non utilizzabile'
+        elif (self.clock() - run.as_of).total_seconds() > settings.stats_ttl_seconds:
+            code, message = 'ANALYSIS_STALE', 'Analisi scaduta: aggiornamento necessario'
+        else:
+            return None
+        return {'blocked': True, 'reason_code': code, 'message': message,
+                'refresh_failed': bool(failed),
+                'analysis_id': str(run.analysis_id), 'checked_at': failed['at'] if failed else None,
+                'stats_captured_at': stats.captured_at.isoformat() if stats else None}
+
     def remove_candidate(self, candidate_id: UUID, action: BetSlipAction):
         candidate = self._candidate(candidate_id, include_removed=True)
         event = {
@@ -656,6 +684,8 @@ class SalaBetService:
         document["selections"] = selections
         automatic = self.repository.all_records("annotations", entity_id="auto-multiple-slip:" + str(slip.id))
         document["automatic_preparation"] = automatic[0] if automatic else None
+        style = self.repository.all_records('annotations', entity_id='salabet-style-slip:' + str(slip.id))
+        document['preparation_style'] = style[0] if style else None
         scheduled = [r for r in self.repository.all_records("annotations", entity_id="automatic-multiples:v1")
                      if r.get("slip_id") == str(slip.id) and r.get("kind") in {"SCHEDULED", "SCHEDULE_FINISHED"}]
         document["confirmation_schedule"] = {
@@ -807,6 +837,10 @@ class SalaBetService:
         return updated
 
     def _validate_ready(self, slip):
+        for selection in slip.selections:
+            review = self.candidate_review(self._candidate(selection.bet_candidate_id, include_removed=True))
+            if review and review.get('refresh_failed'):
+                raise ValueError(review['reason_code'] + ': ' + review['message'])
         if not slip.bookmaker or slip.stake is None:
             raise ValueError("bookmaker and stake are required")
         if any(item.odds_at_placement is None or item.odds_at_placement <= 1 for item in slip.selections):

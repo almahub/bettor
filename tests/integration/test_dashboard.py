@@ -140,7 +140,8 @@ def test_api_control_without_exports_does_not_invent_usage(tmp_path, monkeypatch
         assert report["summary"]["total_tokens"] == 0
 
 
-def test_data_pipeline_control_plane_is_available():
+def test_data_pipeline_control_plane_is_available(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     with TestClient(create_app(runtime())) as client:
         report = client.get("/data-pipeline").json()
         assert report["status"] == "READY"

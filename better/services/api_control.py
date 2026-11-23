@@ -28,7 +28,7 @@ class APIControlService:
         self.client = client
         self.repository = repository
 
-    async def report(self):
+    async def report(self, *, force_local=False):
         admin_key = environment_value("OPENAI_ADMIN_KEY")
         live_enabled = environment_value("OPENAI_USAGE_LIVE_ENABLED").lower() in {
             "1",
@@ -38,7 +38,7 @@ class APIControlService:
         }
         warning = None
         refresh_error = None
-        if admin_key and live_enabled:
+        if admin_key and live_enabled and not force_local:
             try:
                 costs, usage = await self._fetch_live(admin_key)
                 source = "OPENAI_LIVE"
@@ -62,7 +62,8 @@ class APIControlService:
         report["checked_at"] = report["updated_at"]
         if source == "LOCAL_EXPORT":
             timestamps = []
-            for path in (self.cost_path, self.usage_path):
+            pointer = self.cost_path.parent / "export-current.json"
+            for path in ((pointer,) if pointer.exists() else (self.cost_path, self.usage_path)):
                 try:
                     timestamps.append(path.stat().st_mtime)
                 except OSError:
@@ -74,7 +75,17 @@ class APIControlService:
             "reason": "Saldo residuo non disponibile tramite le API ufficiali integrate. Consultare la fatturazione OpenAI.",
             "billing_url": "https://platform.openai.com/settings/organization/billing/overview",
         }
+        if self.repository is not None:
+            from better.services.openai_credit import OpenAICredit
+            ledger = OpenAICredit(self.repository)
+            if report["updated_at"]:
+                ledger.record_costs(costs, source=source, acquired_at=report["updated_at"])
+            report["credit_balance"] = ledger.report(self._local_calls(eur_rate, include_archived=True))
         return report
+
+    def import_exports(self, costs, usage):
+        from better.services.openai_exports import OpenAIExports
+        return OpenAIExports(self.cost_path, self.usage_path).save(costs, usage)
 
     @staticmethod
     def _refresh_error(error):
@@ -130,7 +141,9 @@ class APIControlService:
                 return None, "UNAVAILABLE"
 
     def _read_exports(self):
-        return self._read_json(self.cost_path), self._read_json(self.usage_path)
+        from better.services.openai_exports import OpenAIExports, validate_export
+        costs, usage = OpenAIExports(self.cost_path, self.usage_path).read()
+        return validate_export(costs, "costs"), validate_export(usage, "usage")
 
     @staticmethod
     def _read_json(path):
@@ -144,7 +157,7 @@ class APIControlService:
 
     async def _fetch_live(self, admin_key):
         now = datetime.now(timezone.utc)
-        start = now - timedelta(days=30)
+        start = (now - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
         headers = {"Authorization": f"Bearer {admin_key}"}
         base_url = environment_value("OPENAI_ADMIN_BASE_URL") or "https://api.openai.com/v1"
         own_client = self.client is None
@@ -225,12 +238,13 @@ class APIControlService:
             else None
         )
         dates = [row["date"] for row in activity + cost_rows if row["date"]]
+        ends = [APIControlService._iso(b["end_time"]) for p in (costs, usage) for b in p.get("data", []) if b.get("end_time")]
         return {
             "provider": "OpenAI",
             "source": source,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "period_start": min(dates) if dates else None,
-            "period_end": max(dates) if dates else None,
+            "period_end": max(ends) if ends else max(dates) if dates else None,
             "admin_key_configured": admin_configured,
             "live_enabled": live_enabled,
             "warning": warning,
@@ -250,22 +264,22 @@ class APIControlService:
             "costs": sorted(cost_rows, key=lambda row: row["date"] or "", reverse=True),
         }
 
-    def _local_calls(self, eur_rate):
+    def _local_calls(self, eur_rate, *, include_archived=False):
         if self.repository is None:
             return []
         identities = {}
-        for run in self.repository.list_records("analysis_runs", last=1000):
+        for run in self.repository.all_records("analysis_runs"):
             match = (run.get("snapshot") or {}).get("match") or {}
             if match.get("match_id"):
                 identities[match["match_id"]] = match
-        for request in self.repository.list_records("research_requests", last=1000):
+        for request in self.repository.all_records("research_requests"):
             identities.setdefault(request.get("match_id"), request)
         rows = [
-            ("CONTEXT_RESEARCH", row) for row in self.repository.list_records("research_results", last=1000)
+            ("CONTEXT_RESEARCH", row) for row in self.repository.all_records("research_results")
         ]
         rows += [
             ("FOOTBALL_DATA_RESEARCH", row)
-            for row in self.repository.list_records("annotations", last=1000)
+            for row in self.repository.all_records("annotations")
             if row.get("agent_id") and row.get("request_id") and "requested_fields" in row
         ]
         resets = [
@@ -276,7 +290,7 @@ class APIControlService:
             if row.get("kind") == "OPENAI_HISTORY_ARCHIVED"
         ]
         cutoff = max((row["reset_at"] for row in resets), default=None)
-        if cutoff:
+        if cutoff and not include_archived:
             rows = [(kind, row) for kind, row in rows if (row.get("completed_at") or "") > cutoff]
         calls = []
         for kind, row in rows:
@@ -309,6 +323,8 @@ class APIControlService:
                     "fields": row.get("searched_fields") or row.get("requested_fields") or [],
                     "agent_id": row.get("agent_id"),
                     "session_id": row.get("session_id"),
+                    "request_id": row.get("request_id"),
+                    "cached": row.get("cached", False),
                     "response_id": row.get("response_id"),
                     "search_calls": int(row.get("search_calls") or 0),
                     "tool_calls": int(row.get("tool_calls") or 0),

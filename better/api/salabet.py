@@ -1,5 +1,6 @@
 """SalaBet HTTP workspace over authoritative Better analyses."""
 
+import asyncio
 from datetime import date
 from pathlib import Path
 from uuid import UUID
@@ -19,13 +20,16 @@ from better.services.automatic_multiples import (
     MultipleAutoSwitch,
     MultipleBudget,
     MultipleSwitch,
+    PreparationSettings,
 )
+from better.services.betting_styles import BettingStyles, StylePreparation, StyleSelection
 from better.services.salabet_service import SalaBetService
 
 WEB_ROOT = Path(__file__).parents[1] / "web"
 
 
 def mount_salabet(app, runtime, check_rate_limit):
+    style_tasks = {}
     def service() -> SalaBetService:
         return SalaBetService(runtime().repository, settings=runtime().settings)
 
@@ -73,6 +77,7 @@ def mount_salabet(app, runtime, check_rate_limit):
         rows = []
         for candidate in service().list_candidates(include_removed=include_removed):
             row = candidate.model_dump(mode="json")
+            row['review'] = service().candidate_review(candidate)
             row["timing_comparison"] = timing.view(row["match_id"], row["kickoff"], candidate=row) if row["competition_id"] in runtime().settings.timing_comparison_competitions else None
             rows.append(row)
         return rows
@@ -81,6 +86,51 @@ def mount_salabet(app, runtime, check_rate_limit):
     async def automatic_multiples():
         return AutomaticMultiples(runtime()).report()
 
+    @app.get('/salabet/system-preview')
+    async def diversified_system_preview():
+        return AutomaticMultiples(runtime()).system_preview()
+
+    @app.post('/salabet/styles/preview')
+    async def selected_style_preview(payload: StyleSelection, request: Request):
+        mutation(request)
+        return call(lambda: BettingStyles(runtime()).preview(payload))
+
+    @app.post('/salabet/styles/prepare', status_code=202)
+    async def prepare_selected_style(payload: StylePreparation, request: Request):
+        mutation(request)
+        identifier = str(payload.request_id)
+        if style_tasks and identifier not in style_tasks:
+            raise HTTPException(409, 'STYLE_PREPARATION_BUSY: preparazione gia in corso, attendi il completamento')
+        service = BettingStyles(runtime())
+        result = call(lambda: service.request(payload))
+        if result['status'] == 'REQUESTED' and identifier not in style_tasks:
+            async def work():
+                engine = runtime()
+                lock = engine._locks.setdefault('salabet-style:' + identifier, asyncio.Lock())
+                try:
+                    async with lock:
+                        try:
+                            collector = getattr(app.state, 'data_pipeline_collector', None)
+                            collection_lock = getattr(collector, '_lock', None)
+                            if collection_lock is not None:
+                                async with collection_lock:
+                                    await asyncio.to_thread(service.prepare, payload)
+                            else:
+                                await asyncio.to_thread(service.prepare, payload)
+                        except Exception as error:
+                            await asyncio.to_thread(service.fail, payload, error)
+                finally:
+                    style_tasks.pop(identifier, None)
+            style_tasks[identifier] = asyncio.create_task(work())
+        return {**result, 'running': identifier in style_tasks}
+
+    @app.get('/salabet/styles/preparations/{request_id}')
+    async def selected_style_status(request_id: UUID):
+        result = BettingStyles(runtime()).status(request_id)
+        if result is None:
+            raise HTTPException(404, 'Preparazione non trovata')
+        return {**result, 'running': str(request_id) in style_tasks}
+
     @app.post("/salabet/automatic-multiples")
     async def update_automatic_multiples(payload: MultipleSwitch, request: Request):
         mutation(request)
@@ -88,6 +138,11 @@ def mount_salabet(app, runtime, check_rate_limit):
 
     @app.post('/salabet/automatic-multiples/budget')
     async def multiple_budget(payload: MultipleBudget, request: Request):
+        mutation(request)
+        return call(lambda: AutomaticMultiples(runtime()).update_policy(payload))
+
+    @app.post('/salabet/automatic-multiples/preparation')
+    async def preparation_settings(payload: PreparationSettings, request: Request):
         mutation(request)
         return call(lambda: AutomaticMultiples(runtime()).update_policy(payload))
 

@@ -258,7 +258,7 @@ class Repository:
             )
 
     def historical_collection_status(self):
-        rows = self.list_records("historical_observations", last=1000)
+        rows = self.all_records("historical_observations")
         matches = {row["match"]["match_id"] for row in rows}
         return {
             "observations": len(rows),
@@ -299,7 +299,7 @@ class Repository:
     def active_collection_selections(self, as_of):
         if as_of.tzinfo is None:
             raise ValueError("Selection cutoff must be timezone-aware")
-        rows = self.list_records("pipeline_selections", last=1000)
+        rows = self.all_records("pipeline_selections")
         latest = {}
         for row in sorted(rows, key=lambda item: item["selected_at"]):
             latest[row["match"]["match_id"]] = row
@@ -338,7 +338,7 @@ class Repository:
 
         return tuple(
             HistoricalPrediction.model_validate(row)
-            for row in reversed(self.list_records("settled_predictions", last=1000))
+            for row in reversed(self.all_records("settled_predictions"))
             if datetime.fromisoformat(row["settled_at"]) <= as_of
         )
 

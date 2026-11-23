@@ -7,8 +7,8 @@ test('preview shows exact stakes, selections and explicit opt-in for future prop
  const markup=placementPreview(control,false).value;
  assert.match(markup,/Anteprima delle giocate/);
  assert.match(markup,/Approvazione Auto/);
- assert.match(markup,/T-15 dal primo kickoff/);
- assert.match(markup,/Conferma soltanto queste multiple/);
+ assert.match(markup,/T-24 dal primo kickoff/);
+ assert.match(markup,/Conferma soltanto queste giocate/);
  assert.match(markup,/Autorizzo anche composizioni future/);
  assert.match(markup,/bank|Banca/);
  assert.doesNotMatch(markup,/<script>/);

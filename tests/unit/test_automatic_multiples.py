@@ -11,12 +11,106 @@ from better.domain.salabet import BetCandidateCreate, BetSlipAction
 from better.domain.schemas import AnalysisRequest, AnalysisRun
 from better.providers.fake import make_demo_bundle
 from better.services.application import make_application
-from better.services.automatic_multiples import AutomaticMultiples, MultipleSwitch
+from better.services.automatic_multiples import AutomaticMultiples, MultipleSwitch, PreparationSettings
 from better.services.batch_analysis import BatchAnalysisService
 from better.services.salabet_service import SalaBetService
 from better.storage.repository import Repository
 
 NOW = datetime(2026, 11, 3, 12, tzinfo=UTC)
+
+
+@pytest.mark.parametrize('style,count', [('MULTIPLE', 1), ('SINGLES', 3)])
+async def test_explicit_style_preparation_is_independent_idempotent_and_bank_free(setup, style, count):
+    service, repo, clock, seed = setup
+    for i in range(3):
+        seed(i)
+    request = PreparationSettings(request_id=uuid4(), preparation_enabled=True, style=style, budget_eur='50')
+    service.update_policy(request)
+    service.update_policy(request)
+    assert not service.policy()['enabled']
+    assert service.policy()['preparation_enabled']
+    before = SalaBetService(repo, clock=lambda: clock[0]).bank.status()
+    preview = service.preview()
+    assert len(preview['tickets']) == count
+    assert sum(Decimal(t['amount_eur']) for t in preview['tickets']) == Decimal('50')
+    result = await service.collect_verified()
+    assert len(result['prepared']) == count
+    assert not result['created']
+    restart = AutomaticMultiples(service.runtime, clock=lambda: clock[0])
+    await restart.collect_verified()
+    assert len(SalaBetService(repo).list_slips()) == count
+    assert SalaBetService(repo, clock=lambda: clock[0]).bank.status() == before
+    assert restart.report()['allocated_eur'] == '50.00'
+    assert all(s.status != 'OPEN' for s in SalaBetService(repo).list_slips())
+    assert {r['style'] for s in SalaBetService(repo).list_slips()
+            for r in repo.all_records('annotations', entity_id='salabet-style-slip:'+str(s.id))} == {style}
+
+
+async def test_system_does_not_fall_back_to_multiples_or_force_alternatives(setup):
+    service, repo, _, seed = setup
+    for i in range(3):
+        seed(i)
+    service.update_policy(PreparationSettings(request_id=uuid4(), preparation_enabled=True,
+        style='SYSTEM', budget_eur='50'))
+    preview = service.preview()
+    assert not preview['ready'] and not preview['tickets']
+    await service.collect_verified()
+    assert not SalaBetService(repo).list_slips()
+    assert service.report()['allocated_eur'] == '0.00'
+
+
+async def test_preparation_off_and_settings_change_never_authorize_debit(setup):
+    service, repo, _, seed = setup
+    for i in range(2):
+        seed(i)
+    service.update_policy(PreparationSettings(request_id=uuid4(), preparation_enabled=False,
+        style='MULTIPLE', budget_eur='50'))
+    await service.collect_verified()
+    assert not SalaBetService(repo).list_slips()
+    assert not service.report()['confirmation_enabled']
+
+
+async def test_indicative_automation_stays_draft_and_cannot_be_auto_confirmed(setup):
+    from better.services.automatic_multiples import PlacementBlocked
+    service, repo, _, seed = setup
+    for i in range(2):
+        seed(i)
+    service.update_policy(PreparationSettings(request_id=uuid4(), preparation_enabled=True,
+        style='MULTIPLE', budget_eur='50'))
+    preview = service.preview()
+    assert not preview['operationally_admitted']
+    with pytest.raises(PlacementBlocked, match='INDICATIVE_NOT_ADMITTED'):
+        await service.final_check(preview)
+    await service.collect_verified()
+    assert all(s.status == 'DRAFT' for s in SalaBetService(repo).list_slips())
+    with pytest.raises(ValueError, match='PREPARED_GROUP_EXISTS'):
+        service.update_policy(PreparationSettings(request_id=uuid4(), preparation_enabled=True,
+            style='SINGLES', budget_eur='50'))
+
+
+async def test_new_preparation_config_revokes_existing_confirmation_consent(setup):
+    from better.services.automatic_multiples import MultipleAutoSwitch
+    service, _, _, _ = setup
+    service.update_policy(MultipleAutoSwitch(request_id=uuid4(), enabled=True))
+    assert service.policy()['enabled']
+    service.update_policy(PreparationSettings(request_id=uuid4(), preparation_enabled=True,
+        style='SYSTEM', budget_eur='50'))
+    assert not service.policy()['enabled']
+    assert service.policy()['preview_id'] is None
+    assert service.policy()['approved_budget_eur'] is None
+
+
+async def test_preparation_refresh_reuses_existing_budget_and_is_not_confirmation(setup):
+    service, repo, _, _, calls = refresh_runtime(setup)
+    service.update_policy(PreparationSettings(request_id=uuid4(), preparation_enabled=True,
+        style='MULTIPLE', budget_eur='50'))
+    before = repo.all_records('annotations', entity_id='bank:EUR:v1')
+    result = await service.collect_verified()
+    assert len(result['analysis_refresh']['refreshed']) == 3
+    assert len(calls) == 3
+    assert all(options == {'cache_only_research': True} for _, options in calls)
+    assert not service.policy()['enabled'] and not repo.all_records('bet_slips')
+    assert repo.all_records('annotations', entity_id='bank:EUR:v1') == before
 
 
 @pytest.fixture
@@ -25,6 +119,12 @@ async def setup():
     settings = Settings(min_sample=1000, timing_comparison_competitions=("SYNTHETIC_LEAGUE",))
     app = make_application(settings=settings, repository=repo, providers=make_demo_bundle("bet", as_of=NOW))
     base = await app.analyze(AnalysisRequest(match_id="demo-match", as_of=NOW))
+    base = base.model_copy(update={'snapshot': base.snapshot.model_copy(update={
+        'stats': base.snapshot.stats.model_copy(update={'captured_at': NOW})})})
+    # Keep the template's catalog separate, preserving append-only storage.
+    # Only explicitly seeded fixtures belong to the catalog under test.
+    template_repo = repo
+    repo = Repository("sqlite:///:memory:")
     clock = [NOW + timedelta(seconds=2)]
     runtime = SimpleNamespace(repository=repo, settings=settings)
     service = AutomaticMultiples(runtime, clock=lambda: clock[0])
@@ -66,6 +166,22 @@ async def setup():
     yield service, repo, clock, seed
     await app.close()
     repo.close()
+    template_repo.close()
+
+
+def test_diversified_system_preview_does_not_change_candidates_slips_or_bank(setup):
+    service, repo, _, seed = setup
+    for i in range(6):
+        seed(i)
+    tables = ('bet_candidates', 'bet_slips', 'bet_events', 'annotations')
+    before = {table: repo.all_records(table) for table in tables}
+    result = service.system_preview()
+    assert isinstance(result['ready'], bool)
+    if result['ready']:
+        assert result['ticket_count'] == 42
+    else:
+        assert result['reason_code'] == 'SYSTEM_DIVERSIFICATION_INSUFFICIENT'
+    assert {table: repo.all_records(table) for table in tables} == before
 
 
 def prepare(service, plan=None, request_id=None):
@@ -103,7 +219,7 @@ async def test_button_selects_six_visible_matches_and_creates_ready_without_plac
 
 async def test_only_next_24h_visible_candidates_are_used(setup):
     service, repo, clock, seed = setup
-    seed(0, hours=25)
+    seed(0, hours=37)
     seed(1, hours=-1)
     for i in range(2, 6):
         seed(i, hours=12)
@@ -482,7 +598,7 @@ def refresh_runtime(setup):
     async def analyze(request, **options):
         calls.append((request, options))
         old = runs[request.match_id]
-        run = old.model_copy(update={'analysis_id': uuid4(), 'as_of': clock[0], 'created_at': clock[0]})
+        run = old.model_copy(update={'analysis_id': uuid4(), 'as_of': clock[0], 'created_at': clock[0], 'snapshot': old.snapshot.model_copy(update={'stats': old.snapshot.stats.model_copy(update={'captured_at': clock[0]})})})
         with repo.engine.begin() as conn:
             repo._append(conn, 'analysis_runs', identifier=str(run.analysis_id), entity_id=str(run.analysis_id),
                          match_id=run.match_id, payload=run.model_dump(mode='json'))
@@ -515,6 +631,31 @@ async def test_stale_candidates_refresh_once_without_money_slips_or_fake_t24(set
     restarted = AutomaticMultiples(service.runtime, clock=lambda: clock[0])
     await CandidateRefresh(restarted).run(old_preview)
     assert len(calls) == 3
+
+
+async def test_failed_reclassification_preserves_visible_candidates_and_blocks_ranking(setup, monkeypatch):
+    service, repo, clock, _, _ = refresh_runtime(setup)
+    monkeypatch.setattr(BatchAnalysisService, '_best_candidate', lambda self, run: (None, 'STATS_STALE'))
+    result = await service.collect_verified()
+    assert len(result['analysis_refresh']['refreshed']) == 3
+    desk = SalaBetService(repo, clock=lambda: clock[0], settings=service.settings)
+    candidates = desk.list_candidates()
+    assert len(candidates) == 3 and all(not c.removed for c in candidates)
+    assert all(desk.candidate_review(c)['reason_code'] == 'STATS_STALE' for c in candidates)
+    assert not service.proposal()['selected']
+    assert not repo.all_records('bet_slips')
+    assert not repo.all_records('annotations', entity_id='bank:EUR:v1')
+
+
+async def test_stale_visible_cards_recover_even_when_no_ticket_is_ranked(setup, monkeypatch):
+    service, repo, clock, _, calls = refresh_runtime(setup)
+    preview = service.preview()
+    monkeypatch.setattr(service, 'preview', lambda *args, **kwargs: {**preview, 'tickets': []})
+    result = await service.collect_verified()
+    assert len(result['analysis_refresh']['refreshed']) == 3
+    assert len(calls) == 3
+    assert len(SalaBetService(repo, clock=lambda: clock[0]).list_candidates()) == 3
+    assert not repo.all_records('bet_slips')
 
 
 async def test_current_proposal_requires_new_approval_after_refresh(setup):
@@ -850,7 +991,7 @@ def scheduled_setup(setup, hours=(6, 9, 12), *, future=True):
     from better.services.bank_service import BankInitialize, BankService
     service, repo, clock, seed = setup
     for i, offset in enumerate(hours):
-        seed(i, hours=offset)
+        seed(i, hours=offset + 24)
     bank = BankService(repo, clock=lambda: clock[0])
     bank.initialize(BankInitialize(request_id=uuid4(), amount=Decimal('100')))
     runs = verified_runtime(service, repo, clock)
@@ -873,9 +1014,9 @@ async def test_scheduled_ready_before_first_kickoff_then_open_at_t15_once_after_
     assert all(s.status == 'READY' for s in slips)
     assert Decimal(bank.status()['available']) == 100
     schedule = service.report()['scheduled_confirmations']
-    assert all(r['confirm_at'] == (min(s.kickoff for s in slips[0].selections) - timedelta(minutes=15)).isoformat()
+    assert all(r['confirm_at'] == (min(s.kickoff for s in slips[0].selections) - timedelta(hours=24)).isoformat()
                for r in schedule)
-    clock[0] = NOW + timedelta(hours=5, minutes=44, seconds=59)
+    clock[0] = NOW + timedelta(hours=5, minutes=59, seconds=59)
     restarted = AutomaticMultiples(service.runtime, clock=lambda: clock[0])
     assert not (await restarted.collect_verified())['created']
     assert not bank.status()['bets']
@@ -888,12 +1029,13 @@ async def test_scheduled_ready_before_first_kickoff_then_open_at_t15_once_after_
     assert Decimal(bank.status()['available']) == 50
 
 
-async def test_each_multiple_has_its_own_earliest_kickoff(setup):
+async def test_all_multiples_share_the_first_kickoff_of_the_24h_group(setup):
     from better.services.scheduled_multiples import ScheduledMultiples
     service, repo, clock, bank = scheduled_setup(setup, hours=(3, 4, 5, 8, 9, 10))
     await service.collect_verified()
     rows = sorted(ScheduledMultiples(service).pending(), key=lambda r: r['confirm_at'])
-    assert len(rows) > 1 and rows[0]['confirm_at'] != rows[-1]['confirm_at']
+    assert len(rows) > 1 and len({r['confirm_at'] for r in rows}) == 1
+    assert rows[0]['confirm_at'] == (NOW + timedelta(hours=3)).isoformat()
     spent = Decimal('0')
     for due in sorted({r['confirm_at'] for r in rows}):
         clock[0] = datetime.fromisoformat(due)
@@ -904,12 +1046,49 @@ async def test_each_multiple_has_its_own_earliest_kickoff(setup):
     assert Decimal(bank.status()['available']) == 50
 
 
+async def test_window_includes_later_candidates_within_24h_of_first_kickoff(setup):
+    service, repo, clock, seed = setup
+    _, first = seed(0, hours=3)
+    SalaBetService(repo, clock=lambda: clock[0]).remove_candidate(first.id, BetSlipAction(request_id=uuid4()))
+    seed(1, hours=25)
+    seed(2, hours=27.01)
+    seed(3, hours=7)
+    plan = service.proposal()
+    assert plan['window_start'] == (NOW + timedelta(hours=3)).isoformat()
+    assert plan['window_end'] == (NOW + timedelta(hours=27)).isoformat()
+    assert {r['match_id'] for r in plan['selected']} == {'match-1', 'match-3'}
+
+
+async def test_group_confirmation_rolls_back_all_debits_when_a_later_ticket_fails(setup, monkeypatch):
+    service, repo, clock, bank = scheduled_setup(setup, hours=(3, 4, 5, 8, 9, 10))
+    await service.collect_verified()
+    assert len(SalaBetService(repo).list_slips()) > 1
+    clock[0] = NOW + timedelta(hours=3)
+    original = SalaBetService.place_slip
+    calls = []
+
+    def fail_second(self, *args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise ValueError('controlled business failure')
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(SalaBetService, 'place_slip', fail_second)
+    result = await service.collect_verified()
+    assert not result['created'] and not bank.status()['bets']
+    assert Decimal(bank.status()['available']) == 100
+    assert all(s.status == 'READY' for s in SalaBetService(repo).list_slips())
+    monkeypatch.setattr(SalaBetService, 'place_slip', original)
+    assert (await service.collect_verified())['created']
+    assert Decimal(bank.status()['available']) == 50
+
+
 async def test_t15_missed_or_kickoff_passed_never_debits_retroactively(setup):
     service, repo, clock, bank = scheduled_setup(setup)
     await service.collect_verified()
-    clock[0] = NOW + timedelta(hours=7)
+    clock[0] = NOW + timedelta(hours=31)
     result = await service.collect_verified()
-    assert 'T15_MISSED' in str(result['diagnostics'])
+    assert 'T24_MISSED' in str(result['diagnostics'])
     assert not result['created'] and not bank.status()['bets']
     assert all(s.status == 'READY' for s in SalaBetService(repo).list_slips())
 
@@ -922,7 +1101,7 @@ async def test_disable_or_manual_edit_prevents_scheduled_debit(setup):
     slip = SalaBetService(repo).list_slips()[0]
     SalaBetService(repo, clock=lambda: clock[0]).update_slip(slip.id,
         BetSlipUpdate(request_id=uuid4(), stake=Decimal('49')))
-    clock[0] = NOW + timedelta(hours=5, minutes=45)
+    clock[0] = NOW + timedelta(hours=6)
     result = await service.collect_verified()
     assert 'SCHEDULED_SLIP_CHANGED' in str(result['diagnostics'])
     assert not bank.status()['bets']
@@ -933,7 +1112,7 @@ async def test_disable_or_manual_edit_prevents_scheduled_debit(setup):
 
 async def test_timer_wakes_for_t15_before_regular_30_minute_cycle_without_network(setup):
     from better.services.data_pipeline import DataPipelineCollector, DataPipelineService
-    service, repo, clock, _ = scheduled_setup(setup, hours=(.5, 3, 6))
+    service, repo, clock, _ = scheduled_setup(setup, hours=(.25, 3, 6))
     await service.collect_verified()
     collector = DataPipelineCollector(service.runtime, clock=lambda: clock[0])
     regular = clock[0] + timedelta(minutes=30)
@@ -949,7 +1128,7 @@ async def test_concurrent_t15_confirmation_has_one_debit_per_slip(setup):
     import asyncio
     service, repo, clock, bank = scheduled_setup(setup)
     await service.collect_verified()
-    clock[0] = NOW + timedelta(hours=5, minutes=45)
+    clock[0] = NOW + timedelta(hours=6)
     restarted = AutomaticMultiples(service.runtime, clock=lambda: clock[0])
     await asyncio.gather(service.collect_verified(), restarted.collect_verified())
     slips = SalaBetService(repo).list_slips()
@@ -962,7 +1141,7 @@ async def test_timer_preserves_t24_window_with_30_minute_polling(setup):
     from better.services.automation_control import AutomationControl, AutomationSwitch
     from better.services.data_pipeline import DataPipelineCollector
     service, repo, clock, seed = setup
-    seed(0, hours=24.25)
+    seed(0, hours=48.25)
     AutomationControl(repo, service.settings, clock=lambda: clock[0]).update(
         AutomationSwitch(request_id=uuid4(), enabled=True))
     collector = DataPipelineCollector(service.runtime, clock=lambda: clock[0])
@@ -975,7 +1154,7 @@ async def test_due_confirmation_precedes_catalog_and_archive_work(setup, monkeyp
     from better.services.validation_cohort import ValidationCohortService
     service, _, clock, _ = scheduled_setup(setup)
     await service.collect_verified()
-    clock[0] = NOW + timedelta(hours=5, minutes=45)
+    clock[0] = NOW + timedelta(hours=6)
     calls = []
 
     async def confirm(self):

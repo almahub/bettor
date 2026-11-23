@@ -274,9 +274,11 @@ class DataPipelineService:
             groups[row.get("validation_status", "UNKNOWN")] += 1
         settled_groups = defaultdict(list)
         for row in predictions:
-            settled_groups[(row["model_id"], row["model_version"], row["market"])].append(row)
+            if row.get("source_type", "LIVE_FORWARD") != "LIVE_FORWARD":
+                continue
+            settled_groups[(row["model_id"], row["model_version"], row["market"], row["competition"])].append(row)
         measured = []
-        for (model, version, market), rows in sorted(settled_groups.items()):
+        for (model, version, market, competition), rows in sorted(settled_groups.items()):
             assessment = validate_model(
                 [row["probability"] for row in rows],
                 [row["outcome"] for row in rows],
@@ -290,6 +292,7 @@ class DataPipelineService:
                     "model_id": model,
                     "model_version": version,
                     "market": market,
+                    "competition": competition,
                     "status": assessment.status,
                     "sample_size": assessment.sample_size,
                     "brier_score": assessment.brier,
@@ -482,7 +485,8 @@ class DataPipelineCollector:
                     "discovered": 0,
                     "enrolled": 0,
                     "excluded": 0,
-                    "error": failure_detail(error, stage="ENROLLMENT"),
+                    "error": failure_detail(error, stage="ENROLLMENT",
+                        provider=type(self.runtime.providers.fixtures).__name__),
                 }
             selected = self.runtime.repository.active_collection_selections(now)
             if self.runtime.settings.active_competitions:
@@ -621,7 +625,7 @@ class DataPipelineCollector:
                     except Exception:
                         # Failure is recorded by collect_due; keep the next cycle alive.
                         pass
-                # A local timer is cheap: wake early for known T24/T15 deadlines
+                # A local timer is cheap: wake early for known T48/T24 deadlines
                 # without running another provider collection every minute.
                 regular_at = self.clock() + timedelta(seconds=settings.poll_seconds)
                 while self.clock() < regular_at:
@@ -646,17 +650,30 @@ class DataPipelineCollector:
                 due = moment(row['confirm_at'])
                 if due > now:
                     deadlines.append(due)
-                elif now < due + timedelta(minutes=1):
+                elif now < moment(row['first_kickoff']):
                     # At the trigger itself, run immediately; repeated failed
                     # attempts are left to the next normal cycle.
                     if self.started_at is None or self.started_at < due:
                         deadlines.append(now)
+        if owner.policy()['enabled'] and not owner.execution_status().get('paused'):
+            for row in self.runtime.repository.all_records('matches'):
+                if row.get('competition') in self.runtime.settings.timing_comparison_competitions:
+                    due = moment(row['kickoff']) - timedelta(hours=24)
+                    if due > now:
+                        deadlines.append(due)
+                    elif now < moment(row['kickoff']) and (self.started_at is None or self.started_at < due):
+                        deadlines.append(now)
         timing = TimingComparisonService(self.runtime, clock=self.clock)
         if timing.control.policy()['enabled']:
+            for retry in timing.retry_deadlines():
+                if retry > now:
+                    deadlines.append(retry)
+                elif self.started_at is None or self.started_at < retry:
+                    deadlines.append(now)
             for row in self.runtime.repository.all_records('matches'):
                 if row.get('competition') not in self.runtime.settings.timing_comparison_competitions:
                     continue
-                due = moment(row['kickoff']) - timedelta(hours=24)
+                due = moment(row['kickoff']) - timedelta(hours=48)
                 if due > now:
                     deadlines.append(due)
                 elif now < due + timedelta(minutes=10) and (self.started_at is None or self.started_at < due):

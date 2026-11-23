@@ -41,6 +41,13 @@ class MultipleBudget(Contract):
     budget_eur: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
 
 
+class PreparationSettings(Contract):
+    request_id: UUID
+    preparation_enabled: StrictBool
+    style: Literal['MULTIPLE', 'SYSTEM', 'SINGLES']
+    budget_eur: Decimal = Field(gt=0, max_digits=10, decimal_places=2)
+
+
 class MultipleAutoSwitch(Contract):
     request_id: UUID
     enabled: StrictBool
@@ -108,16 +115,28 @@ class AutomaticMultiples:
 
     def update_policy(self, request):
         document = request.model_dump(mode='json')
+        requested = dict(document)
         with self._transaction() as conn:
             repo = copy(self.repository)
             repo.engine = _BoundEngine(conn)
             previous = next((r for r in self._rows(repo) if r.get('request_id') == str(request.request_id)), None)
             if previous:
-                if previous.get('request') != document:
+                if previous.get('request') != requested:
                     raise ValueError('Richiesta gia utilizzata con parametri diversi')
             else:
                 current = self.policy(repo)
+                if isinstance(request, PreparationSettings):
+                    pending = self.prepared_group(repo)
+                    if pending and (request.style != current.get('style') or request.budget_eur != Decimal(current['budget_eur'])):
+                        raise ValueError('PREPARED_GROUP_EXISTS: gestisci prima le schedine già preparate; non vengono modificate automaticamente')
+                    # A new composition policy never inherits permission to debit Banca.
+                    document = {**document, 'workflow_version': 2, 'enabled': False,
+                                'preview_id': None, 'approved_budget_eur': None}
+                elif isinstance(request, MultipleBudget) and current.get('workflow_version') == 2:
+                    document = {**document, 'enabled': False, 'preview_id': None, 'approved_budget_eur': None}
                 if document.get('enabled') and hasattr(self.runtime, 'providers'):
+                    if current.get('workflow_version') == 2 and not current.get('preparation_enabled') and not self.prepared_group(repo):
+                        raise ValueError('PREPARATION_DISABLED: attiva prima la preparazione o prepara una proposta')
                     preview = self.preview(repo)
                     if document.get('preview_id') != preview['preview_id']:
                         raise ValueError('PREVIEW_CHANGED: rivedi e approva l’anteprima aggiornata')
@@ -128,11 +147,22 @@ class AutomaticMultiples:
                 updated = {**current, **{k:v for k,v in document.items() if k != 'request_id'},
                            'kind': 'POLICY', 'sequence': current['sequence']+1,
                            'activation_id': str(request.request_id) if 'enabled' in document else current.get('activation_id','legacy'),
-                           'approved_budget_eur': current['budget_eur'] if document.get('enabled') else current.get('approved_budget_eur'),
-                           'request_id': str(request.request_id), 'request': document,
+                           'approved_budget_eur': current['budget_eur'] if document.get('enabled') else document.get('approved_budget_eur', current.get('approved_budget_eur')),
+                           'request_id': str(request.request_id), 'request': requested,
                            'at': self.clock().isoformat()}
                 self._write(repo, conn, 'multiple-policy:'+str(request.request_id), updated)
         return self.report()
+
+    def prepared_group(self, repo=None):
+        repo = repo or self.repository
+        desk = SalaBetService(repo, clock=self.clock)
+        for row in sorted(self._rows(repo), key=lambda r: r.get('at', ''), reverse=True):
+            if row['kind'] != 'PREPARED' or not row.get('preview') or row.get('turn') != self._scope():
+                continue
+            slips = [desk.get_slip(UUID(i)) for i in row['slips']]
+            if slips and all(s.status in {'DRAFT', 'READY'} for s in slips):
+                return row
+        return None
 
     def _scope(self):
         local = self.clock().astimezone(ROME)
@@ -146,11 +176,32 @@ class AutomaticMultiples:
                     if r['kind'] in {'GROUP', 'PREPARED'}
                     and (r.get('turn') or plans.get(r.get('plan_id'), {}).get('turn')) == self._scope()), Decimal('0'))
 
-    def _options(self, repo):
+    def selection_window(self, repo=None):
+        repo = repo or self.repository
+        now = self.clock()
+        # Anchor before ranking: excluding a weak early match must not postpone
+        # the confirmation of all the other matches in the same group.
+        matches = {}
+        for row in repo.all_records('matches'):
+            matches.setdefault(row['match_id'], row)
+        kickoffs = [moment(r['kickoff']) for r in matches.values()
+                    if r.get('competition') in self.settings.timing_comparison_competitions
+                    and now < moment(r['kickoff']) <= now + timedelta(hours=48)]
+        if not kickoffs:
+            return None, None
+        start = min(kickoffs)
+        return start, start + timedelta(hours=24)
+
+    def _options(self, repo, *, candidate_ids=None):
         desk = SalaBetService(repo, clock=self.clock)
         candidates = desk.list_candidates()
-        eligible = [c for c in candidates if self.clock() < c.kickoff <= self.clock() + timedelta(hours=24)
-                    and c.competition_id in self.settings.timing_comparison_competitions]
+        selected_ids = {str(identifier) for identifier in candidate_ids} if candidate_ids is not None else None
+        if selected_ids is not None:
+            candidates = [c for c in candidates if str(c.id) in selected_ids]
+        _, window_end = self.selection_window(repo)
+        eligible = [c for c in candidates if self.clock() < c.kickoff
+                    and (selected_ids is not None or c.kickoff <= (window_end or self.clock() + timedelta(hours=24)))
+                    and (selected_ids is not None or c.competition_id in self.settings.timing_comparison_competitions)]
         ranker = BatchAnalysisService(SimpleNamespace(repository=repo, settings=self.settings), clock=self.clock)
         runs, choices, rejected, latest = {}, [], [], {}
         for c in eligible:
@@ -160,6 +211,10 @@ class AutomaticMultiples:
         primary = {}
         alternatives = {}
         for c in eligible:
+            review = desk.candidate_review(c)
+            if review and review.get('refresh_failed'):
+                rejected.append({'match_id': c.match_id, 'reason': review['reason_code']})
+                continue
             run = runs[str(c.analysis_id)]
             if run is None or run.as_of != latest.get(c.match_id):
                 continue
@@ -211,11 +266,18 @@ class AutomaticMultiples:
 
     def proposal(self):
         top, choices, rejected, considered, eligible = self._options(self.repository)
+        start, end = self.selection_window()
         remaining = max(Decimal('0'), Decimal(self.policy()['budget_eur']) - self._spent(self.repository))
         plan = {'turn': self._scope(), 'budget_eur': f'{remaining:.2f}', 'max_matches': 6, 'max_slips': 3,
                 'mode': MODE, 'selected': top, 'alternatives': choices, 'rejected': rejected,
+                'window_start': start.isoformat() if start else None,
+                'window_end': end.isoformat() if end else None,
                 'considered': considered, 'eligible_24h': eligible,
-                'note': 'Sceglie fino a sei partite distinte da Da valutare, con kickoff entro 24 ore. Ranking esistente, non garanzia di vincita. Crea multiple READY di test; conferma giocata manuale. INDICATIVE resta tale. Nessun gruppo o attesa di checkpoint.'}
+                'note': 'Sceglie fino a sei partite distinte da Da valutare, con kickoff entro 24 ore. Ranking esistente, non garanzia di vincita. Crea multiple READY; conferma manuale o automatica autorizzata. INDICATIVE resta tale. Preparazione entro 48 ore; gruppo di 24 ore dalla prima partita futura; controllo unico del gruppo a T-24.'}
+        if self.policy().get('workflow_version') == 2:
+            plan['style'] = self.policy()['style']
+            plan['max_slips'] = {'MULTIPLE': 1, 'SYSTEM': 42, 'SINGLES': 6}[plan['style']]
+            plan['note'] = 'Analisi T48; fino a sei partite nello stesso intervallo di kickoff di 24 ore. Stile esplicito, budget cumulativo settimanale. Preparazione senza addebito; conferma separata.'
         plan['plan_id'] = canonical_hash(plan)
         return plan
 
@@ -250,11 +312,48 @@ class AutomaticMultiples:
             result = result[:1]
         return result
 
+    def system_preview(self):
+        from better.services.system_composition import system_preview
+        selected, alternatives, _, _, _ = self._options(self.repository)
+        desk = SalaBetService(self.repository, clock=self.clock, settings=self.settings)
+        for row in selected:
+            review = desk.candidate_review(desk._candidate(UUID(row['candidate_id'])))
+            if review:
+                return {'ready': False, 'reason_code': review['reason_code'],
+                        'message': review['message'], 'tickets': []}
+        return system_preview(alternatives, [row['match_id'] for row in selected])
+
     def preview(self, repo=None):
         repo = repo or self.repository
         worker = AutomaticMultiples(SimpleNamespace(repository=repo, settings=self.settings), clock=self.clock)
         plan = worker.proposal()
         desk = SalaBetService(repo, clock=self.clock)
+        if worker.policy().get('workflow_version') == 2:
+            pending = worker.prepared_group(repo)
+            if pending:
+                result = dict(pending['preview'])
+            else:
+                from better.services.betting_styles import BettingStyles, StyleSelection
+                chosen = plan['selected']
+                style = worker.policy()['style']
+                minimum = {'MULTIPLE': 2, 'SYSTEM': 6, 'SINGLES': 1}[style]
+                result = {'ready': False, 'tickets': [], 'style': style,
+                          'reason_code': 'AUTOMATION_CANDIDATES_MISSING',
+                          'message': f'Servono almeno {minimum} partite utilizzabili; disponibili {len(chosen)}.'}
+                if len(chosen) >= minimum and Decimal(plan['budget_eur']) > 0:
+                    result = BettingStyles(worker.runtime, clock=self.clock).preview(StyleSelection(
+                        style=style, candidate_ids=tuple(UUID(r['candidate_id']) for r in chosen),
+                        budget_eur=Decimal(plan['budget_eur'])))
+                result = {**result, 'plan_id': plan['plan_id'],
+                          'window_start': plan['window_start'], 'window_end': plan['window_end']}
+                result['preview_id'] = canonical_hash(result)
+            bank = desk.bank.status()
+            total = sum((Decimal(t['amount_eur']) for t in result['tickets']), Decimal('0'))
+            return {**result, 'total_eur': str(total), 'bank_available_eur': bank['available'],
+                    'bank_after_eur': str(Decimal(bank['available']) - total),
+                    'operationally_admitted': bool(result['tickets']) and all(
+                        r.get('status') == 'BET' for t in result['tickets'] for r in t['selections']),
+                    'bank_sufficient': bank['initialized'] and Decimal(bank['available']) >= total}
         existing = {tuple(sorted((s.match_id,s.market.value,s.selection) for s in slip.selections)) for slip in desk.list_slips()}
         combinations = [rows for rows in self.compose(plan['alternatives']) if tuple(sorted((r['match_id'],r['market'],r['selection']) for r in rows)) not in existing]
         cents = int(Decimal(plan['budget_eur'])*100)
@@ -268,7 +367,8 @@ class AutomaticMultiples:
                 tickets.append({'amount_eur': str(amount), 'combined_odds': str(odds), 'selections': rows})
         bank = desk.bank.status()
         total = sum((Decimal(t['amount_eur']) for t in tickets), Decimal('0'))
-        identity = {'plan_id': plan['plan_id'], 'tickets': tickets}
+        identity = {'plan_id': plan['plan_id'], 'tickets': tickets,
+                    'window_start': plan['window_start'], 'window_end': plan['window_end']}
         return {**identity, 'preview_id': canonical_hash(identity), 'total_eur': str(total),
                 'bank_available_eur': bank['available'],
                 'bank_after_eur': str(Decimal(bank['available'])-total),
@@ -292,18 +392,52 @@ class AutomaticMultiples:
             self._write(repo,conn,'multiple-execution:'+str(sequence)+':'+str(uuid5(NAMESPACE_URL,self.clock().isoformat())),payload)
 
     async def collect_verified(self):
+        if self.policy().get('workflow_version') == 2 and not self.policy()['enabled']:
+            activation = self.policy().get('activation_id')
+            if not self.policy().get('preparation_enabled') or self.execution_status().get('paused'):
+                return {'enabled': False, 'created': [], 'diagnostics': ['Preparazione automatica disattivata.']}
+            preview = self.preview()
+            if hasattr(self.runtime, 'analyze') and not self.prepared_group():
+                from better.services.candidate_refresh import CandidateRefresh
+                try:
+                    refresh = await CandidateRefresh(self).run(preview)
+                except Exception:
+                    self.record_execution('ANALYSIS_REFRESH_FAILED', technical=True)
+                    return {'enabled': True, 'created': [], 'diagnostics': ['ANALYSIS_REFRESH_FAILED: nessuna schedina creata.']}
+                if any(refresh.values()):
+                    if refresh['failed']:
+                        self.record_execution('ANALYSIS_REFRESH_FAILED', technical=True)
+                    return {'enabled': True, 'created': [], 'analysis_refresh': refresh,
+                            'diagnostics': ['Aggiornamento delle candidate: preparazione nel prossimo ciclo, senza addebiti.']}
+            if self.prepared_group() or not preview['tickets']:
+                return {'enabled': True, 'created': [], 'diagnostics': [preview.get('message') or 'Gruppo già preparato; conferma manuale.']}
+            try:
+                report = self.update(MultipleSwitch(request_id=uuid5(NAMESPACE_URL, 'prepare-only:' + preview['plan_id']),
+                    enabled=True, plan_id=preview['plan_id']), auto_prepare_activation=activation)
+                return {'enabled': True, 'created': [], 'prepared': [i for r in report['preparations'] for i in r['slips']],
+                        'diagnostics': ['Schedine preparate; Banca invariata e conferma manuale.']}
+            except Exception as error:
+                self.record_execution(str(error) if isinstance(error, ValueError) else 'PREPARATION_FAILED',
+                                      technical=not isinstance(error, ValueError))
+                return {'enabled': True, 'created': [], 'diagnostics': [str(error) if isinstance(error, ValueError) else 'PREPARATION_FAILED']}
         if not self.policy()['enabled'] or self.execution_status().get('paused'):
             return {'enabled':False,'created':[],'diagnostics':['Automazione disattivata o sospesa.']}
         from better.services.scheduled_multiples import ScheduledMultiples
         schedule = ScheduledMultiples(self)
+        if self.policy().get('workflow_version') == 2 and not schedule.pending():
+            group = self.prepared_group()
+            if group:
+                with self._transaction() as conn:
+                    repo = copy(self.repository)
+                    repo.engine = _BoundEngine(conn)
+                    if not schedule.pending(repo):
+                        schedule.save(repo, conn, group['slips'], group['preview'])
         if schedule.pending():
             return await schedule.collect_due()
         preview = self.preview()
         policy = self.policy()
         if hasattr(self.runtime,'providers') and (not policy.get('preview_id') or not policy.get('approved_budget_eur') or Decimal(policy['budget_eur'])>Decimal(policy['approved_budget_eur']) or (policy.get('approval_mode')!='FUTURE_PROPOSALS' and policy.get('preview_id')!=preview['preview_id'])):
             return {'enabled':True,'created':[],'diagnostics':['APPROVAL_REQUIRED: approva l’anteprima aggiornata.']}
-        if not preview['tickets']:
-            return self.collect()
         if hasattr(self.runtime, 'analyze'):
             from better.services.candidate_refresh import CandidateRefresh
             try:
@@ -329,6 +463,8 @@ class AutomaticMultiples:
                 return {'enabled': self.policy()['enabled'] and not self.execution_status()['paused'], 'created': [],
                         'diagnostics': [message], 'analysis_refresh': refresh,
                         **({'error': message} if refresh['failed'] else {})}
+        if not preview['tickets']:
+            return self.collect()
         # Prepare now without moving money. Verification and confirmation belong
         # to the first kickoff minus fifteen minutes of each individual ticket.
         if hasattr(self.runtime, 'providers'):
@@ -363,6 +499,9 @@ class AutomaticMultiples:
         return result
 
     async def final_check(self, preview, *, scheduled=False):
+        if self.policy().get('workflow_version') == 2 and any(
+                r.get('status') != 'BET' for t in preview['tickets'] for r in t['selections']):
+            raise PlacementBlocked('INDICATIVE_NOT_ADMITTED: proposta indicativa; conferma automatica bloccata.')
         if not hasattr(self.runtime,'providers'):
             return  # Pure service tests supply no network runtime.
         now = self.clock()
@@ -371,6 +510,8 @@ class AutomaticMultiples:
         runs = {}
         for ticket in preview['tickets']:
             for row in ticket['selections']:
+                if self.policy().get('workflow_version') == 2 and row.get('status') != 'BET':
+                    raise PlacementBlocked('INDICATIVE_NOT_ADMITTED: proposta indicativa; conferma automatica bloccata.')
                 match_id = row['match_id']
                 run = self.repository.get_run(row['analysis_id'])
                 if run is None or not 0 <= (now-run.as_of).total_seconds() <= self.settings.stats_ttl_seconds:
@@ -424,25 +565,32 @@ class AutomaticMultiples:
         approval_required = bool(policy['enabled'] and (not policy.get('preview_id') or not policy.get('approved_budget_eur') or Decimal(policy['budget_eur'])>Decimal(policy['approved_budget_eur']) or (policy.get('approval_mode')!='FUTURE_PROPOSALS' and policy.get('preview_id')!=preview['preview_id'])))
         if policy['enabled'] and scheduled and policy.get('preview_id') and policy.get('approved_budget_eur') and Decimal(policy['budget_eur']) <= Decimal(policy['approved_budget_eur']):
             approval_required = any(r['approval_required'] for r in scheduled)
-            readiness = 'Multiple preparate: conferma automatica a T\u221215 dal primo kickoff di ciascuna, se i controlli passano.'
+            readiness = 'Multiple preparate: conferma automatica a T\u221224 dal primo kickoff del gruppo, se i controlli passano.'
         if approval_required:
             readiness = 'APPROVAL_REQUIRED: rivedi e approva l’anteprima aggiornata.'
         refresh_rows = self.repository.all_records('annotations', entity_id='candidate-refresh:v1')
         refresh_status = sorted(refresh_rows, key=lambda r: (r['at'], r['kind'] != 'CLAIM'), reverse=True)[:6]
-        return {'approval_required': approval_required, 'enabled': policy['enabled'] and not execution.get('paused'), 'paused': execution.get('paused',False), 'execution_status': execution, 'preview': preview, 'budget_eur': policy['budget_eur'], 'control': policy, 'proposal': plan, 'approved_plan': None,
+        return {'workflow_version': policy.get('workflow_version', 1),
+                'preparation_enabled': policy.get('preparation_enabled', False),
+                'style': policy.get('style', 'MULTIPLE'),
+                'confirmation_enabled': policy['enabled'] and not execution.get('paused'),
+                'approval_required': approval_required, 'enabled': policy['enabled'] and not execution.get('paused'), 'paused': execution.get('paused',False), 'execution_status': execution, 'preview': preview, 'budget_eur': policy['budget_eur'], 'control': policy, 'proposal': plan, 'approved_plan': None,
                 'analysis_refresh_status': refresh_status,
                 'scheduled_confirmations': scheduled,
                 'allocated_eur': f'{spent:.2f}', 'unallocated_eur': f'{max(Decimal("0"), Decimal(policy['budget_eur'])-spent):.2f}',
                 'preparations': rows, 'groups': [], 'errors': errors, 'readiness_reason': readiness,
                 'note': 'Budget totale del turno settimanale Europe/Rome. Preparazione manuale senza addebito; automazione separata delle giocate registrate con addebito Banca. Nessuna puntata al bookmaker.'}
 
-    def update(self, request, *, auto_place=False, auto_schedule=None):
+    def update(self, request, *, auto_place=False, auto_schedule=None, auto_prepare_activation=None):
         if not request.enabled:
             return self.report()
         with self._transaction() as conn:
             repo = copy(self.repository)
             repo.engine = _BoundEngine(conn)
             worker = AutomaticMultiples(SimpleNamespace(repository=repo, settings=self.settings), clock=self.clock)
+            if auto_prepare_activation is not None and (not worker.policy().get('preparation_enabled')
+                    or worker.policy().get('activation_id') != auto_prepare_activation or worker.execution_status(repo).get('paused')):
+                raise ValueError('PREPARATION_DISABLED: autorizzazione cambiata; nessuna schedina creata')
             if auto_place and hasattr(self.runtime,'providers') and (getattr(self,'_verified_preview',None) != worker.preview()['preview_id'] or getattr(self,'_verified_activation',None)!=worker.policy().get('activation_id','legacy') or self.clock()>=getattr(self,'_verified_until',self.clock())):
                 raise ValueError('FINAL_CHECK_REQUIRED: rivedi l’anteprima e verifica quote e calendario')
             if auto_place and hasattr(self.runtime,'providers') and (not worker.policy().get('approved_budget_eur') or Decimal(worker.policy()['budget_eur'])>Decimal(worker.policy()['approved_budget_eur'])):
@@ -458,13 +606,20 @@ class AutomaticMultiples:
                 plan = worker.proposal()
                 if plan['plan_id'] != request.plan_id:
                     raise ValueError('Proposta cambiata: aggiorna Da valutare e verifica le sei selezioni prima di approvare')
-                if len(plan['selected']) < 3:
+                version2 = worker.policy().get('workflow_version') == 2
+                minimum = {'MULTIPLE': 2, 'SYSTEM': 6, 'SINGLES': 1}[worker.policy()['style']] if version2 else 3
+                if len(plan['selected']) < minimum:
                     raise ValueError('Servono almeno tre partite utilizzabili in Da valutare con kickoff nelle prossime 24 ore')
                 if Decimal(plan['budget_eur']) <= 0:
                     raise ValueError('Budget di preparazione del turno gia assegnato: nessuna nuova schedina creata')
                 desk = SalaBetService(repo, clock=self.clock)
-                combinations = worker.compose(plan['alternatives'])
+                style_preview = worker.preview(repo) if version2 else None
+                if version2 and not style_preview.get('ready'):
+                    raise ValueError(style_preview.get('reason_code', 'PREPARATION_BLOCKED') + ': ' + style_preview.get('message', 'Proposta non disponibile'))
+                combinations = [t['selections'] for t in style_preview['tickets']] if version2 else worker.compose(plan['alternatives'])
                 existing = {tuple(sorted((s.match_id, s.market.value, s.selection) for s in slip.selections)) for slip in desk.list_slips()}
+                if version2 and any(tuple(sorted((c['match_id'], c['market'], c['selection']) for c in rows)) in existing for rows in combinations):
+                    raise ValueError('DUPLICATE_GROUP: una schedina della proposta esiste già; nessun gruppo parziale creato')
                 combinations = [rows for rows in combinations if tuple(sorted((c['match_id'], c['market'], c['selection']) for c in rows)) not in existing]
                 if not combinations:
                     raise ValueError('Nessuna nuova multipla valida: selezioni incompatibili o schedine gia presenti')
@@ -482,7 +637,7 @@ class AutomaticMultiples:
                     identifier = uuid5(NAMESPACE_URL, f"candidate-preparation:{plan['plan_id']}:{index}")
                     candidate_ids = []
                     for position, row in enumerate(rows, 1):
-                        if not self.clock() < moment(row['kickoff']) <= self.clock() + timedelta(hours=24):
+                        if not self.clock() < moment(row['kickoff']) <= (moment(plan['window_end']) if plan.get('window_end') else self.clock() + timedelta(hours=24)):
                             raise ValueError('MATCH_ALREADY_STARTED: finestra delle prossime 24 ore non piu valida')
                         candidate = desk.create_batch_candidate(BetCandidateCreate(analysis_id=row['analysis_id'], prediction_id=row['prediction_id'], market=row['market'], selection=row['selection']),
                             {'batch_id': identifier, 'ranking_position': position, 'ranking_score': row['ranking_score'],
@@ -492,21 +647,32 @@ class AutomaticMultiples:
                             raise ValueError('Candidata rimossa: aggiorna prima della preparazione')
                         candidate_ids.append(candidate.id)
                     slip = desk.create_slip(BetSlipCreate(request_id=identifier, candidate_ids=tuple(candidate_ids)))
-                    amount = Decimal(cents//len(combinations) + (index < cents % len(combinations))) / 100
+                    amount = Decimal(style_preview['tickets'][index]['amount_eur']) if version2 else Decimal(cents//len(combinations) + (index < cents % len(combinations))) / 100
                     desk.update_slip(slip.id, BetSlipUpdate(request_id=uuid5(identifier, 'details'), stake=amount,
                         bookmaker=rows[0]['bookmaker'], odds_at_placement={c: Decimal(str(r['odds'])) for c,r in zip(candidate_ids, rows, strict=True)}))
-                    desk.confirm_slip(slip.id, BetSlipAction(request_id=uuid5(identifier, 'ready')))
+                    indicative = version2 and any(r['status'] != 'BET' for r in rows)
+                    if not indicative:
+                        desk.confirm_slip(slip.id, BetSlipAction(request_id=uuid5(identifier, 'ready')))
+                    if auto_place and indicative:
+                        raise ValueError('INDICATIVE_NOT_ADMITTED: conferma automatica bloccata')
                     if auto_place:
                         desk.place_slip(slip.id, BetSlipAction(request_id=uuid5(identifier, 'automatic-test-place')))
                     metadata = {'origin': MODE, 'turn': plan['turn'], 'plan_id': plan['plan_id'], 'amount_eur': str(amount),
-                                'status': 'OPEN' if auto_place else 'READY', 'automatic_test_placement': auto_place, 'selections': rows, 'reason': (('Giocata confermata automaticamente; Banca addebitata, nessun bookmaker contattato. ' if auto_place else 'Pronta come schedina, non piazzata; conferma manuale e quote da verificare. ') + 'INDICATIVE non diventa BET. Mercati diversi della stessa partita restano correlati.')}
+                                'status': 'OPEN' if auto_place else 'DRAFT' if indicative else 'READY', 'automatic_test_placement': auto_place, 'selections': rows, 'reason': (('Giocata confermata automaticamente; Banca addebitata, nessun bookmaker contattato. ' if auto_place else 'Preparata senza addebito; INDICATIVE resta DRAFT e non è ammessa alla conferma automatica. ' if indicative else 'Pronta come schedina, non piazzata; conferma manuale e quote da verificare. ') + 'INDICATIVE non diventa BET. Mercati diversi della stessa partita restano correlati.')}
                     if auto_schedule is not None:
-                        metadata['reason'] = 'Preparata automaticamente senza addebito; verifica e conferma a T-15 dal primo kickoff della multipla, con consenso valido. INDICATIVE resta tale.'
+                        metadata['reason'] = 'Preparata automaticamente senza addebito; verifica e conferma a T-24 dal primo kickoff del gruppo di 24 ore, con consenso valido. INDICATIVE resta tale.'
                     self._write(repo, conn, 'auto-multiple-slip:'+str(identifier), metadata, entity='auto-multiple-slip:'+str(identifier))
+                    if version2:
+                        self._write(repo, conn, 'style-slip:' + str(identifier), {
+                            'style': worker.policy()['style'], 'group_id': plan['plan_id'],
+                            'index': index + 1, 'count': len(combinations), 'budget_eur': plan['budget_eur'],
+                            'origin': 'AUTOMATION', 'reason': 'INDICATIVE_NOT_ADMITTED' if indicative else None},
+                            entity='salabet-style-slip:' + str(identifier))
                     ids.append(str(identifier))
                 self._write(repo, conn, 'candidate-prepared:'+plan['plan_id'], {'kind': 'PREPARED', 'plan_id': plan['plan_id'],
                     'request_id': str(request.request_id), 'turn': plan['turn'], 'slips': ids, 'allocated_eur': plan['budget_eur'],
-                    'selected': plan['selected'], 'automatic_test_placement': auto_place, 'at': self.clock().isoformat()})
+                    'selected': plan['selected'], 'automatic_test_placement': auto_place, 'at': self.clock().isoformat(),
+                    **({'preview': style_preview, 'style': worker.policy()['style']} if version2 else {})})
                 if auto_schedule is not None:
                     from better.services.scheduled_multiples import ScheduledMultiples
                     ScheduledMultiples(self).save(repo, conn, ids, auto_schedule)
